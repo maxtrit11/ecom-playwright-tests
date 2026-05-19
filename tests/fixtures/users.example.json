@@ -1,0 +1,21 @@
+{
+  "_comment": "Скопируй этот файл в users.json и заполни реальными значениями. users.json в .gitignore.",
+  "validUser": {
+    "email": "user@example.com",
+    "password": "REPLACE_ME"
+  },
+  "loginUser": {
+    "email": "user@example.com",
+    "password": "REPLACE_ME"
+  },
+  "orderUser": {
+    "name": "Test User",
+    "phone": "60000000",
+    "email": "user@example.com"
+  },
+  "registerUser": {
+    "firstName": "Test",
+    "lastName": "User",
+    "phone": "60000000"
+  }
+}
