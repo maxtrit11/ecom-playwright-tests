@@ -32,8 +32,9 @@ def click_save_and_wait(page: Page) -> None:
 # ---------------------------------------------------------------------------
 @pytest.fixture(autouse=True)
 def login_and_open_personal_data(page: Page):
-    page.goto("/ru")
-    page.wait_for_load_state("networkidle")
+    # `load`/networkidle часто не достигаются на стейдже (фоновые запросы)
+    page.goto("/ru", wait_until="domcontentloaded", timeout=60_000)
+    page.locator(".btn__action.btn__auth").wait_for(state="visible", timeout=15_000)
 
     # Открыть поп-ап авторизации
     page.locator(".btn__action.btn__auth").click(force=True)

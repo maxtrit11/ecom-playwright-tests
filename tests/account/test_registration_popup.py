@@ -26,8 +26,11 @@ def open_registration_popup(page: Page) -> None:
 # ---------------------------------------------------------------------------
 @pytest.fixture(autouse=True)
 def navigate_home(page: Page):
-    page.goto("/ru")
-    page.wait_for_load_state("networkidle")
+    # wait_until="load" зависает на /ru из-за фоновых ресурсов
+    # (чат-виджет и т.д.) — используем domcontentloaded
+    page.goto("/ru", wait_until="domcontentloaded", timeout=60_000)
+    # networkidle тоже зачастую не достигается — ждём наличия шапки
+    page.locator(".btn__action.btn__auth").wait_for(state="visible", timeout=15_000)
 
 
 # ===========================================================================

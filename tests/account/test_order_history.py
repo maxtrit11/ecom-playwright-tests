@@ -65,8 +65,26 @@ def login_and_open_order_history(page: Page):
     # Ждём успешный логин — кнопка меняется на «Кабинет»
     expect(auth_btn).to_contain_text("Кабинет", timeout=30_000)
 
-    # Переход в История заказов напрямую
-    page.goto("/account/history", wait_until="domcontentloaded", timeout=60_000)
+    # Дожидаемся закрытия модалки и стабилизации страницы, иначе
+    # `page.goto` после логина гоняется с пост-логин редиректами Vue
+    # и падает с ERR_ABORTED.
+    modal.wait_for(state="hidden", timeout=10_000)
+    page.wait_for_load_state("networkidle", timeout=20_000)
+
+    # Переход в Историю заказов с повтором при гонке навигаций
+    for attempt in range(3):
+        try:
+            page.goto(
+                "/ru/account/history",
+                wait_until="domcontentloaded",
+                timeout=60_000,
+            )
+            break
+        except Exception as e:
+            if "ERR_ABORTED" in str(e) and attempt < 2:
+                page.wait_for_timeout(1500)
+                continue
+            raise
     page.wait_for_load_state("networkidle", timeout=30_000)
     expect(page).to_have_url(re.compile(r"account/history"), timeout=15_000)
 
