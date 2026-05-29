@@ -2,7 +2,7 @@
 
 Не привязаны к конкретной категории и не зависят от конкретных значений
 фильтров (брендов, цветов, цен и т.д.). URL категории передаётся через
-переменную окружения `CATEGORY_URL` (по умолчанию `/ro/xiaomi`).
+переменную окружения `CATEGORY_URL` (по умолчанию `/ro/jbl-tune`).
 
 Запуск на другой категории:
     CATEGORY_URL=/ro/some-category pytest tests/test_category_filters.py
@@ -24,7 +24,7 @@ from playwright.sync_api import Locator, Page, expect
 
 
 # URL категории — можно переопределить через env var.
-CATEGORY_URL = os.environ.get("CATEGORY_URL", "/ro/xiaomi")
+CATEGORY_URL = os.environ.get("CATEGORY_URL", "/ro/jbl-tune")
 
 
 # ---------------------------------------------------------------------------
@@ -162,12 +162,6 @@ def test_uncheck_returns_counter_to_initial(page: Page):
         "() => !location.search.match(/filters=\\d/)", timeout=10_000
     )
     _wait_after_filter(page)
-    # URL чистится раньше, чем сервер пересчитает выдачу: ждём, пока
-    # счётчик реально вернётся к исходному.
-    page.wait_for_function(
-        f"() => parseInt((document.querySelector('{FOUND_GOODS}')?.textContent || '').match(/\\d+/)?.[0] || '-1') === {initial_count}",
-        timeout=10_000,
-    )
 
     after_count = _found_count(page)
     assert after_count == initial_count, (
