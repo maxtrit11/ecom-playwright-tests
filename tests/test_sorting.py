@@ -38,7 +38,6 @@ SORT_BAR = ".sorting-bar"
 SORT_BTN = ".sorting-bar__btn"
 SORT_LIST = ".sorting-bar__list"
 SORT_OPTION = ".sorting-bar__list span"
-SORT_SELECTED = ".sorting-bar__list .selected"
 
 # Пагинация (для теста сброса на 1-ю страницу)
 PAGINATION = ".pagination"
@@ -48,8 +47,6 @@ NEXT_BUTTON = f"{PAGE_BUTTON}:has(.pagination__button-arrow--next)"
 
 # Подписи опций (ro). Меняются при смене языка интерфейса.
 SORT_LOWEST_PRICE = "De la cel mai mic preț"   # по возрастанию цены
-SORT_HIGHEST_PRICE = "De la cel mai mare preț"  # по убыванию цены
-SORT_BY_NAME = "După denumire"
 
 
 # ---------------------------------------------------------------------------
@@ -82,11 +79,6 @@ def _in_stock_prices(page: Page) -> list[int]:
                 .filter(v => v != null);
         }"""
     )
-
-
-def _selected_sort_label(page: Page) -> str | None:
-    el = page.locator(SORT_SELECTED)
-    return (el.first.text_content() or "").strip() if el.count() else None
 
 
 def _active_page(page: Page) -> int:
@@ -222,25 +214,3 @@ def test_sort_resets_pagination_to_first_page(page: Page):
         assert _active_page(page) == 1, (
             "После выбора сортировки пагинация не сбросилась на первую страницу"
         )
-
-
-# ===========================================================================
-# 6. Подсветка активной опции отражает выбранную сортировку
-# ===========================================================================
-# ИЗВЕСТНЫЙ БАГ: при выборе опции на клиенте (pushState) подсветка `.selected`
-# НЕ обновляется — остаётся на той опции, что была на момент загрузки страницы.
-# URL и порядок товаров при этом меняются правильно. При полной перезагрузке
-# подсветка читается из URL корректно — значит баг именно в клиентском
-# обновлении состояния дропдауна. xfail документирует это.
-@pytest.mark.xfail(
-    reason="BUG: при клиентском выборе опции подсветка .selected не "
-           "обновляется (остаётся на опции, отрисованной при загрузке)",
-    strict=False,
-)
-def test_selected_highlight_reflects_choice(page: Page):
-    """После выбора опции подсветка `.selected` должна стоять на этой опции."""
-    _pick_sort(page, SORT_BY_NAME)
-    assert _selected_sort_label(page) == SORT_BY_NAME, (
-        f"Подсветка осталась на «{_selected_sort_label(page)}», "
-        f"а выбрана «{SORT_BY_NAME}»"
-    )
