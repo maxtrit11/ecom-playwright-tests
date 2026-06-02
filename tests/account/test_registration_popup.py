@@ -63,7 +63,11 @@ def test_open_registration_popup_with_all_elements(page: Page):
     expect(
         page.locator('input[placeholder="Введи e-mail адрес"]').first
     ).to_be_visible()
-    expect(page.locator('input[type="tel"]')).to_be_visible()
+    # На stage в форме два <input type=tel id="phone"> (оригинальный .phone +
+    # сгенерированный плагином intl-tel-input .iti__tel-input). Видимое
+    # пользователю поле — именно .iti__tel-input, его и проверяем/заполняем,
+    # иначе strict-mode падает на 2 совпадениях.
+    expect(page.locator('input[type="tel"].iti__tel-input')).to_be_visible()
 
     password_fields = page.locator('input[type="password"]')
     expect(password_fields).to_have_count(2)
@@ -130,7 +134,7 @@ def test_password_mismatch_shows_error(page: Page):
     form.locator('input[placeholder="Введи e-mail адрес"]').first.fill(
         "testuser_random@test.com"
     )
-    form.locator('input[type="tel"]').fill("60123456")
+    form.locator('input[type="tel"].iti__tel-input').fill("60123456")
 
     # Ввести разные пароли
     password_fields = form.locator('input[placeholder="********"]')
@@ -163,7 +167,7 @@ def test_duplicate_email_shows_error(page: Page):
     # Заполнить форму валидными данными
     form.locator('input[placeholder="Ваше имя"]').fill("Тест")
     form.locator('input[placeholder="Ваше фамилия"]').fill("Тестов")
-    form.locator('input[type="tel"]').fill("60123456")
+    form.locator('input[type="tel"].iti__tel-input').fill("60123456")
 
     password_fields = form.locator('input[placeholder="********"]')
     password_fields.nth(0).fill("Password123!")
@@ -244,7 +248,7 @@ def test_successful_registration(page: Page):
     form.locator('input[placeholder="Введи e-mail адрес"]').first.fill(
         unique_email
     )
-    form.locator('input[type="tel"]').fill(f"60{unique_phone}")
+    form.locator('input[type="tel"].iti__tel-input').fill(f"60{unique_phone}")
 
     password_fields = form.locator('input[placeholder="********"]')
     password_fields.nth(0).fill("TestPass123!")

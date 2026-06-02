@@ -60,7 +60,12 @@ CHECKOUT_FORM = ".checkout__form"
 CHECKOUT_OVERLAY = ".modal__checkout"            # вешает закрытие при клике по overlay
 SIDEBAR_CHECKOUT = ".cart__sidebar--checkout"     # «нижний» summary внутри формы
 SIDEBAR_FIXED = ".cart__sidebar--fixed"           # липкий summary, где живёт кнопка submit
-BTN_CHECKOUT_X = '.modal__cart button.btn__close[title="Закрыть корзину"]'
+# Крестик формы чекаута живёт НЕ в .modal__cart, а в оверлее .modal__checkout
+# (.checkout__form > .head > button.btn-close.btn__close). У него тот же
+# title="Закрыть корзину", но он визуально верхний — именно он закрывает
+# чекаут. Старый селектор `.modal__cart button.btn__close` ловил перекрытый
+# крестик корзины → click intercepted (30s timeout).
+BTN_CHECKOUT_X = '.modal__checkout button.btn-close.btn__close'
 BTN_CONTINUE_SHOPPING = f"{SIDEBAR_FIXED} button.btn__secondary"
 
 # Личные данные
