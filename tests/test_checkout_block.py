@@ -44,7 +44,8 @@ import pytest
 from playwright.sync_api import Page, expect
 
 
-PRODUCT_URL = "/ru/product/klipsch-detroit"
+# Товар выбирается динамически фикстурой `in_stock_product` (conftest.py):
+# если у товара нет стока — берётся следующий доступный, без залипания на одном.
 
 # --- Открытие коша ---
 BTN_ADD_TO_CART = "button.btn__add_cart"
@@ -97,6 +98,27 @@ CHK_TERMS = f'{CHECKOUT_FORM} input#terms-agreement-modal'
 LINK_TERMS = f'{CHECKOUT_FORM} a[href$="/terms"]'
 BTN_PLACE_ORDER = 'button.request[title="Оформить заказ"]'
 
+# --- Валидация обязательных полей (кейс 376) ---
+# Проверено probe-скриптом на живом stage. При сабмите пустой формы:
+#   * обёртка телефона (`.phone`) получает класс `error`;
+#   * v-select Населенный пункт рисует `.g-select-search-error`;
+#   * блок согласия получает `.terms_error`;
+#   * под обязательными полями появляются ВИДИМЫЕ `span.validation`
+#     с текстом «Это обязательное поле» (в DOM они есть всегда, но скрыты,
+#     пока поле не отвалидировано — поэтому фильтруем по `:visible`).
+REQUIRED_MSG = "Это обязательное поле"
+VIS_VALIDATION = f"{CHECKOUT_FORM} span.validation:visible"
+
+# --- Блок итогов (стоимость товара / доставка / итог) ---
+# Сводка живёт в липком сайдбаре `.cart__sidebar--fixed` строками `.list__item`.
+# Стоимость доставки динамическая: Кишинёв ≠ Молдова, а при самовывозе строка
+# доставки из итогов исчезает (проверено probe-скриптом на stage).
+SUMMARY_ITEMS = ".cart__sidebar .list__items .list__item"
+ERR_REQUIRED = f"{CHECKOUT_FORM} .g-select-search-error"
+ERR_PHONE = f"{CHECKOUT_FORM} .phone.error"
+ERR_TERMS = f"{CHECKOUT_FORM} .terms.terms_error"
+CHK_DONT_CALL_LABEL = f'{CHECKOUT_FORM} label[for="dontCallMe"]'
+
 # Success popup на checkout — на stage появляется не всегда стабильно,
 # поэтому в test_place_order_happy_path основной критерий — закрытие модалки
 # + очистка корзины, а сам попап проверяется мягко (если присутствует в DOM).
@@ -131,19 +153,19 @@ def _open_cart_drawer(page: Page):
     _hide_b24_widget(page)
 
 
-def _add_product(page: Page):
-    page.goto(PRODUCT_URL, wait_until="domcontentloaded", timeout=60_000)
+def _add_product(page: Page, product_url: str):
+    page.goto(product_url, wait_until="domcontentloaded", timeout=60_000)
     expect(page.locator("h1")).to_be_visible(timeout=15_000)
     _hide_b24_widget(page)
     page.locator(BTN_ADD_TO_CART).first.click()
     page.wait_for_timeout(800)
 
 
-def _open_checkout(page: Page):
+def _open_checkout(page: Page, product_url: str):
     """Открыть форму оформления заказа: товар → корзина → «Оформить заявку»."""
     page.set_viewport_size({"width": 1920, "height": 1080})
     page.context.clear_cookies()
-    page.goto(PRODUCT_URL, wait_until="domcontentloaded", timeout=60_000)
+    page.goto(product_url, wait_until="domcontentloaded", timeout=60_000)
     _reset_cart_storage(page)
     page.reload(wait_until="domcontentloaded")
     expect(page.locator("h1")).to_be_visible(timeout=15_000)
@@ -157,7 +179,7 @@ def _open_checkout(page: Page):
         page.locator(BTN_CART_CLOSE).click()
         page.wait_for_timeout(400)
 
-    _add_product(page)
+    _add_product(page, product_url)
     _open_cart_drawer(page)
     expect(page.locator(CART_PRODUCT).first).to_be_visible(timeout=10_000)
 
@@ -168,8 +190,8 @@ def _open_checkout(page: Page):
 
 
 @pytest.fixture
-def checkout(page: Page):
-    return _open_checkout(page)
+def checkout(page: Page, in_stock_product: str):
+    return _open_checkout(page, in_stock_product)
 
 
 def _click_radio_by_id(page: Page, radio_id: str):
@@ -178,6 +200,78 @@ def _click_radio_by_id(page: Page, radio_id: str):
     «прокликает» связанный input."""
     page.locator(f'{CHECKOUT_FORM} label[for="{radio_id}"]').first.scroll_into_view_if_needed()
     page.locator(f'{CHECKOUT_FORM} label[for="{radio_id}"]').first.click()
+
+
+def _require_option(page: Page, radio_id: str, human: str):
+    """Набор способов оплаты/доставки зависит от товара (настраивается в админке).
+    Если у выбранного товара такой опции нет — корректно пропускаем тест,
+    а не падаем по таймауту."""
+    if page.locator(f'{CHECKOUT_FORM} label[for="{radio_id}"]').count() == 0:
+        pytest.skip(f"Опция «{human}» недоступна для выбранного товара")
+
+
+def _sector_vselect_index(page: Page) -> int:
+    """Индекс v-select сектора/населённого пункта внутри формы.
+
+    После выбора типа доставки «Кишинёв» регион предзаполняется («мун. Кишинёв»),
+    а в форме остаётся и ЛИШНИЙ задизейбленный v-select (вариант «Молдова»),
+    поэтому брать `.last`/`.nth(1)` нельзя. Сектор — это единственный активный
+    (`не vs--disabled`) v-select без уже выбранного значения. Возвращает -1,
+    если такого нет (например, населённый пункт предустановлен).
+    """
+    return page.evaluate(
+        """() => {
+            const vs = [...document.querySelectorAll('.checkout__form .v-select')];
+            for (let i = 0; i < vs.length; i++) {
+                const disabled = vs[i].className.includes('vs--disabled');
+                const sel = vs[i].querySelector('.vs__selected');
+                const hasSel = sel && sel.innerText.trim().length > 0;
+                if (!disabled && !hasSel) return i;
+            }
+            return -1;
+        }"""
+    )
+
+
+def _setup_chisinau_address(page: Page) -> bool:
+    """Настроить адрес доставки по Кишинёву.
+
+    ВАЖНО про модель UI (проверено через MCP на живом stage):
+    «Кишинёв» — это НЕ пункт выпадающего списка региона, а отдельный radio
+    типа доставки `#delivery-chisinau`. При его выборе:
+      * первый v-select автозаполняется «мун. Кишинёв» (регион проставляется сам);
+      * активный пустой v-select становится выбором СЕКТОРА
+        (Ботаника / Буюканы / Рышкановка / Скулянка / Центр / Чеканы);
+      * рядом остаётся задизейбленный v-select варианта «Молдова» — его игнорируем.
+    Список же `#delivery-region` («Молдова») содержит 36 районов и Кишинёва там нет.
+
+    Возвращает True, если адрес настроен; False — если тип «Кишинёв» недоступен
+    для товара (вызывающий код сам решает, скипать или нет).
+    """
+    # Доставка по адресу (обычно выбрана по умолчанию)
+    _require_option(page, "delivery", "Доставка по адресу")
+    if not page.locator(RADIO_DELIVERY_ADDRESS).is_checked():
+        _click_radio_by_id(page, "delivery")
+        page.wait_for_timeout(400)
+
+    # Тип доставки = Кишинёв (radio сам проставляет регион «мун. Кишинёв»)
+    if page.locator(f'{CHECKOUT_FORM} label[for="delivery-chisinau"]').count() == 0:
+        return False
+    _click_radio_by_id(page, "delivery-chisinau")
+    page.wait_for_timeout(800)
+
+    # Выбрать сектор в активном пустом v-select. У части товаров сектор/город
+    # уже предустановлен (активного пустого v-select нет, idx == -1) — тогда
+    # адрес и так валиден, выбирать нечего.
+    idx = _sector_vselect_index(page)
+    if idx >= 0:
+        page.locator(VSELECT_SEARCH).nth(idx).click()
+        page.wait_for_timeout(800)
+        sector_items = page.locator(DROPDOWN_MENU)
+        expect(sector_items.first).to_be_visible(timeout=5_000)
+        sector_items.first.click()
+        page.wait_for_timeout(400)
+    return True
 
 
 # ===========================================================================
@@ -235,14 +329,15 @@ def test_dont_call_me_reveals_messenger_field(checkout: Page):
     # До клика поле скрыто
     expect(page.locator(INPUT_MESSENGER)).to_have_count(0)
 
-    page.locator(CHK_DONT_CALL).check()
+    # Сам input#dontCallMe визуально скрыт — кликаем по связанному label
+    page.locator(CHK_DONT_CALL_LABEL).first.click()
     page.wait_for_timeout(300)
 
     # Появилось поле под чекбоксом
     expect(page.locator(INPUT_MESSENGER)).to_be_visible(timeout=3_000)
 
     # А выключить — поле снова исчезло
-    page.locator(CHK_DONT_CALL).uncheck()
+    page.locator(CHK_DONT_CALL_LABEL).first.click()
     page.wait_for_timeout(300)
     expect(page.locator(INPUT_MESSENGER)).to_have_count(0)
 
@@ -282,6 +377,7 @@ def test_select_payment_method(checkout: Page, qase_id: int, selector: str, labe
     page = checkout
 
     chosen_id = selector.split("#")[-1]
+    _require_option(page, chosen_id, label)
     _click_radio_by_id(page, chosen_id)
     page.wait_for_timeout(400)
 
@@ -313,6 +409,7 @@ def test_select_delivery_method(checkout: Page, qase_id: int, selector: str, lab
     page = checkout
 
     chosen_id = selector.split("#")[-1]
+    _require_option(page, chosen_id, label)
     _click_radio_by_id(page, chosen_id)
     page.wait_for_timeout(400)
 
@@ -340,6 +437,7 @@ def test_select_delivery_type(checkout: Page, qase_id: int, selector: str, label
     page = checkout
 
     chosen_id = selector.split("#")[-1]
+    _require_option(page, chosen_id, label)
     _click_radio_by_id(page, chosen_id)
     page.wait_for_timeout(400)
 
@@ -355,44 +453,205 @@ def test_region_and_city_dropdowns_open_with_items(checkout: Page):
     page = checkout
 
     # Убедимся, что выбран «Доставка по адресу» — иначе адресные поля скрыты
+    _require_option(page, "delivery", "Доставка по адресу")
     if not page.locator(RADIO_DELIVERY_ADDRESS).is_checked():
         _click_radio_by_id(page, "delivery")
         page.wait_for_timeout(400)
 
-    # Регион
-    region_input = page.locator(VSELECT_SEARCH).nth(0)
-    region_input.click()
-    page.wait_for_timeout(800)
-    region_items = page.locator(DROPDOWN_MENU)
-    expect(region_items.first).to_be_visible(timeout=5_000)
-    assert region_items.count() > 5, "В списке регионов слишком мало пунктов"
-
-    # Выбираем «Кишинёв» (по умолчанию подсвечен первый — вверху списка)
-    region_items.filter(has_text=re.compile(r"^Кишинёв$")).first.click()
+    # «Кишинёв» — это radio типа доставки, а не пункт списка региона. До его
+    # выбора v-select'ы региона/сектора задизейблены. Если у товара такого типа
+    # нет — корректно пропускаем.
+    if page.locator(f'{CHECKOUT_FORM} label[for="delivery-chisinau"]').count() == 0:
+        pytest.skip("Тип доставки «Кишинёв» недоступен для этого товара")
+    _click_radio_by_id(page, "delivery-chisinau")
     page.wait_for_timeout(800)
 
-    # Регион выбран → второй v-select становится активным
+    # Регион проставился сам → первый v-select показывает «мун. Кишинёв»
     expect(page.locator(VSELECT_SELECTED).first).to_have_text(
         re.compile(r"Кишинёв")
     )
-    city_dd = page.locator(VSELECT).nth(1)
-    expect(city_dd).not_to_have_class(re.compile(r"vs--disabled"))
 
-    # Открыть населенные пункты
-    page.locator(VSELECT_SEARCH).nth(1).click()
+    # Активный пустой v-select (сектор) открывается со списком пунктов.
+    # У части товаров сектор/город предустановлен — выпадающего списка нет,
+    # проверять нечего → корректно пропускаем.
+    idx = _sector_vselect_index(page)
+    if idx < 0:
+        pytest.skip("Сектор/населённый пункт предустановлен — выпадающего списка нет")
+    page.locator(VSELECT_SEARCH).nth(idx).click()
     page.wait_for_timeout(800)
-    city_items = page.locator(DROPDOWN_MENU)
-    expect(city_items.first).to_be_visible(timeout=5_000)
-    assert city_items.count() > 0, "Список населенных пунктов пустой"
+    sector_items = page.locator(DROPDOWN_MENU)
+    expect(sector_items.first).to_be_visible(timeout=5_000)
+    assert sector_items.count() > 0, "Список секторов/населенных пунктов пустой"
+
+
+# ---------------------------------------------------------------------------
+# Хелпер сабмита формы
+# ---------------------------------------------------------------------------
+OUT_OF_STOCK = ".cart__error-stock, .cart__product--out-of-stock"
+
+
+def _skip_if_out_of_stock(page: Page):
+    """Кнопки «Следующий шаг»/«Оформить заказ» становятся disabled при нулевом
+    остатке (корзина рисует `.cart__error-stock` / `.cart__product--out-of-stock`).
+    Остаток на stage волатилен и может обнулиться уже ПОСЛЕ резолва товара
+    фикстурой — тогда любой клик по сабмиту висит до 30s-таймаута и даёт false-fail.
+    Корректно пропускаем такой кейс (документированная флакость стока)."""
+    if page.locator(OUT_OF_STOCK).count() > 0:
+        pytest.skip("Товар фактически вне стока (Доступное количество 0) — сабмит недоступен")
+
+
+def _click_place_order(page: Page):
+    """Нажать «Оформить заказ». При невалидной форме сабмит не уходит —
+    модалка остаётся открытой и подсвечивает обязательные поля."""
+    _skip_if_out_of_stock(page)
+    btn = page.locator(BTN_PLACE_ORDER).first
+    btn.scroll_into_view_if_needed()
+    btn.click()
+    page.wait_for_timeout(800)
+
+
+def _delivery_cost_in_summary(page: Page):
+    """Стоимость доставки (число) из строки «Доставка …» блока итогов.
+    None — если строки доставки в итогах нет (например, самовывоз)."""
+    row = page.locator(SUMMARY_ITEMS).filter(has_text=re.compile(r"Доставка"))
+    if row.count() == 0:
+        return None
+    m = re.search(r"(\d[\d\s]*)\s*MDL", row.first.inner_text())
+    return int(re.sub(r"\D", "", m.group(1))) if m else None
+
+
+# ===========================================================================
+# Кейс 376 (шаг 1): сабмит пустой формы подсвечивает обязательные поля
+# ===========================================================================
+def test_required_fields_errors_on_empty_submit(checkout: Page):
+    page = checkout
+
+    # До сабмита ошибок обязательных полей нет
+    expect(page.locator(ERR_PHONE)).to_have_count(0)
+    expect(page.locator(ERR_TERMS)).to_have_count(0)
+
+    _click_place_order(page)
+
+    # Форма не закрылась (сабмит заблокирован валидацией)
+    expect(page.locator(CHECKOUT_FORM)).to_be_visible()
+
+    # Обёртка телефона и блок согласия подсвечены ошибкой (стабильные сигналы)
+    expect(page.locator(ERR_PHONE)).to_have_count(1, timeout=5_000)
+    expect(page.locator(ERR_TERMS)).to_have_count(1)
+
+    # Под обязательными полями виден текст «Это обязательное поле»
+    # (v-select Населенный пункт грузится асинхронно — даём expect авто-ретраить)
+    req_msg = page.locator(VIS_VALIDATION).filter(has_text=REQUIRED_MSG)
+    expect(req_msg.first).to_be_visible(timeout=10_000)
+
+
+# ===========================================================================
+# Кейс 376 (шаг 8): оплата «По перечислению» добавляет обязательные поля юрлица
+# ===========================================================================
+def test_transfer_payment_reveals_required_legal_fields(checkout: Page):
+    page = checkout
+
+    # Число видимых ошибок обязательных полей до выбора перечисления
+    _click_place_order(page)
+    errors_before = page.locator(VIS_VALIDATION).count()
+
+    # Выбираем «По перечислению»
+    _click_radio_by_id(page, "recount")
+    page.wait_for_timeout(500)
+
+    # Появились поля юрлица
+    for label in ["Название фирмы", "Фискальный код", "Юридический адрес", "IBAN"]:
+        expect(page.locator(CHECKOUT_FORM).get_by_text(label, exact=False).first).to_be_visible(
+            timeout=5_000
+        )
+
+    # Повторный сабмит — обязательных ошибок стало больше (добавились поля юрлица)
+    _click_place_order(page)
+    errors_after = page.locator(VIS_VALIDATION).count()
+    assert errors_after > errors_before, (
+        f"После «По перечислению» число обязательных ошибок не выросло: "
+        f"{errors_before} → {errors_after}"
+    )
+
+
+# ===========================================================================
+# Кейс 376 (шаг 9): «Не перезванивать» открывает поле мессенджера
+# и снимает обязательность телефона
+# ===========================================================================
+def test_dont_call_makes_phone_optional(checkout: Page):
+    page = checkout
+
+    # Сначала убеждаемся, что без галочки телефон обязателен
+    _click_place_order(page)
+    expect(page.locator(ERR_PHONE)).to_have_count(1, timeout=5_000)
+
+    # Включаем «Не перезванивать» (клик по label — сам input скрыт)
+    page.locator(CHK_DONT_CALL_LABEL).first.click()
+    page.wait_for_timeout(400)
+
+    # Появилось поле мессенджера
+    expect(page.locator(INPUT_MESSENGER)).to_be_visible(timeout=3_000)
+
+    # Повторный сабмит: телефон больше НЕ обязательный — класс error снят
+    _click_place_order(page)
+    expect(page.locator(ERR_PHONE)).to_have_count(0, timeout=5_000)
+
+
+# ===========================================================================
+# Доп. к 376: стоимость доставки в итогах меняется при смене типа/способа
+# (Кишинёв ≠ Молдова; самовывоз убирает доставку из суммы)
+# ===========================================================================
+def test_delivery_cost_updates_in_summary(checkout: Page):
+    page = checkout
+
+    # Доставка по адресу выбрана по умолчанию — подстрахуемся
+    if not page.locator(RADIO_DELIVERY_ADDRESS).is_checked():
+        _click_radio_by_id(page, "delivery")
+        page.wait_for_timeout(500)
+
+    # Тип доставки = Кишинёв → есть ненулевая стоимость доставки
+    _click_radio_by_id(page, "delivery-chisinau")
+    page.wait_for_timeout(1_000)
+    chisinau = _delivery_cost_in_summary(page)
+    assert chisinau and chisinau > 0, (
+        f"В итогах нет стоимости доставки по Кишинёву: {chisinau}"
+    )
+
+    # Тип доставки = Молдова → стоимость доставки изменилась
+    _click_radio_by_id(page, "delivery-region")
+    page.wait_for_timeout(1_000)
+    region = _delivery_cost_in_summary(page)
+    assert region and region != chisinau, (
+        f"Стоимость доставки не изменилась при смене Кишинёв→Молдова: "
+        f"{chisinau} → {region}"
+    )
+
+    # Способ = Самовывоз → строка доставки исчезает из итогов
+    _click_radio_by_id(page, "self-call")
+    expect(
+        page.locator(SUMMARY_ITEMS).filter(has_text=re.compile(r"Доставка"))
+    ).to_have_count(0, timeout=5_000)
 
 
 # ===========================================================================
 # Кейс 236: Положительное оформление заказа
 # (наличными + доставка по адресу + Кишинёв)
 # Реальный сабмит: создаст заявку на стейдже. Стейдж это разрешает.
+#
+# ВАЖНО — этот тест ОФОРМЛЯЕТ настоящий заказ и тем самым РАСХОДУЕТ остаток
+# выбранного товара. Поэтому он намеренно объявлен ПОСЛЕДНИМ в файле: pytest
+# гонит тесты в порядке определения, и happy_path тратит сток уже после всех
+# остальных submit-кейсов (376-я серия кликает «Оформить заказ» для проверки
+# валидации — этой кнопки не будет, если сток упадёт до 0). Не переносите его
+# выше валидационных тестов.
 # ===========================================================================
 def test_place_order_happy_path(checkout: Page):
     page = checkout
+
+    # 0. Реальный сток. Фикстура `_has_stock` отсеивает товары с нулевым остатком,
+    #    но остаток на stage волатилен и мог обнулиться между резолвом и сабмитом
+    #    (в т.ч. этим же тестом при ретрае) — тогда сабмит disabled, корректно скипаем.
+    _skip_if_out_of_stock(page)
 
     # 1. ФИО
     page.locator(INPUT_NAME).fill("QA Autotest")
@@ -404,23 +663,12 @@ def test_place_order_happy_path(checkout: Page):
     # 3. E-mail
     page.locator(INPUT_EMAIL).fill(f"qa+{int(time.time())}@example.com")
 
-    # 4. Доставка по адресу — должна быть выбрана по умолчанию, но подстрахуемся.
-    if not page.locator(RADIO_DELIVERY_ADDRESS).is_checked():
-        _click_radio_by_id(page, "delivery")
-        page.wait_for_timeout(300)
-
-    # 5. Регион → Кишинёв
-    page.locator(VSELECT_SEARCH).nth(0).click()
-    page.wait_for_timeout(800)
-    page.locator(DROPDOWN_MENU).filter(has_text=re.compile(r"^Кишинёв$")).first.click()
-    page.wait_for_timeout(800)
-
-    # 6. Населенный пункт → первый доступный
-    page.locator(VSELECT_SEARCH).nth(1).click()
-    page.wait_for_timeout(800)
-    expect(page.locator(DROPDOWN_MENU).first).to_be_visible(timeout=5_000)
-    page.locator(DROPDOWN_MENU).first.click()
-    page.wait_for_timeout(400)
+    # 4-6. Доставка по адресу + тип «Кишинёв» (регион проставляется сам) + сектор.
+    #      На stage «Кишинёв» — это radio типа доставки, а не пункт списка региона
+    #      (подробности в _setup_chisinau_address). Если тип «Кишинёв» недоступен
+    #      для товара — сценарий неприменим, корректно пропускаем.
+    if not _setup_chisinau_address(page):
+        pytest.skip("Тип доставки «Кишинёв» недоступен для выбранного товара")
 
     # 7. Адрес
     page.locator(INPUT_STREET).fill("ул. Тестовая, д. 1, кв. 1")

@@ -27,7 +27,8 @@ import pytest
 from playwright.sync_api import Page, expect
 
 
-PRODUCT_URL = "/ru/product/klipsch-detroit"
+# Товар(ы) выбираются динамически фикстурой `in_stock_products` (conftest.py):
+# если у товара нет стока — берётся следующий доступный.
 
 # Кнопка «В корзину» на странице товара
 BTN_ADD_TO_CART = "button.btn__add_cart"
@@ -92,7 +93,7 @@ def _open_cart_drawer(page: Page):
     _hide_b24_widget(page)
 
 
-def _add_one_product_to_cart(page: Page, product_url: str = PRODUCT_URL):
+def _add_one_product_to_cart(page: Page, product_url: str):
     """Открыть PDP, нажать «В корзину»."""
     page.goto(product_url, wait_until="domcontentloaded", timeout=60_000)
     add_btn = page.locator(BTN_ADD_TO_CART).first
@@ -102,11 +103,11 @@ def _add_one_product_to_cart(page: Page, product_url: str = PRODUCT_URL):
 
 
 @pytest.fixture
-def cart_with_product(page: Page):
+def cart_with_product(page: Page, in_stock_product: str):
     """Дровер корзины открыт, в корзине ровно один товар."""
     page.set_viewport_size({"width": 1920, "height": 1080})
     page.context.clear_cookies()
-    page.goto(PRODUCT_URL, wait_until="domcontentloaded", timeout=60_000)
+    page.goto(in_stock_product, wait_until="domcontentloaded", timeout=60_000)
     _reset_cart_storage(page)
     page.reload(wait_until="domcontentloaded")
     expect(page.locator("h1")).to_be_visible(timeout=15_000)
@@ -122,7 +123,7 @@ def cart_with_product(page: Page):
         page.locator(BTN_CLOSE).click()
         page.wait_for_timeout(500)
 
-    _add_one_product_to_cart(page)
+    _add_one_product_to_cart(page, in_stock_product)
     _open_cart_drawer(page)
     expect(page.locator(CART_PRODUCT).first).to_be_visible(timeout=10_000)
     return page
@@ -160,11 +161,14 @@ def test_close_cart_by_clicking_outside(cart_with_product: Page):
 # ===========================================================================
 # Кейс 107: Удалить товар нажав на кнопку Удалить в карточке товара
 # ===========================================================================
-def test_delete_one_product_from_cart(cart_with_product: Page):
+def test_delete_one_product_from_cart(cart_with_product: Page, in_stock_products: list):
     page = cart_with_product
 
-    # Добираем второй товар, чтобы убедиться, что удаляется именно одна карточка
-    second_url = "/ru/product/jbl-partybox-on-the-go-2"
+    # Добираем второй товар, чтобы убедиться, что удаляется именно одна карточка.
+    # Берём второй доступный со стоком; если он один — повторяем первый (всё равно
+    # в корзине станет 2 карточки разных позиций либо +1 к количеству — проверяем
+    # уменьшение числа карточек после удаления).
+    second_url = in_stock_products[1] if len(in_stock_products) > 1 else in_stock_products[0]
     # Закрываем дровер, идём на второй PDP, добавляем, возвращаемся
     page.locator(BTN_CLOSE).click()
     page.wait_for_timeout(400)
