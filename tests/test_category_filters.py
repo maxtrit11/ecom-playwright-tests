@@ -97,6 +97,7 @@ def test_filters_sidebar_renders_with_groups(page: Page):
 # ===========================================================================
 # 2. Счётчик «Найдено товаров» виден и > 0
 # ===========================================================================
+@pytest.mark.smoke
 def test_found_goods_counter_visible(page: Page):
     """Заголовок сайдбара содержит счётчик «Найдено товаров: N» (N > 0)."""
     counter = page.locator(FOUND_GOODS)

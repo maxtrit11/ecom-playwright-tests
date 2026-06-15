@@ -1,0 +1,68 @@
+name: Smoke Tests (stage.ecom.md)
+
+# Быстрый дымовой набор: ~7 критичных проверок (каталог, поиск, товар+корзина,
+# категория, пагинация, авторизация, личный кабинет/логин). Цель — за пару
+# минут ответить «не сломалось ли что-то жизненно важное прямо сейчас».
+# Запускается на каждый пуш с изменением тестов и вручную. Полная суита — в e2e.yml.
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - "tests/**"
+      - "conftest.py"
+      - "pytest.ini"
+      - "requirements.txt"
+      - ".github/workflows/smoke.yml"
+
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright browser (chromium)
+        run: python -m playwright install --with-deps chromium
+
+      # Smoke-набор не делает реальных сабмитов, поэтому хватает headless —
+      # так быстрее. Реран флака берётся из pytest.ini.
+      - name: Run smoke tests
+        run: |
+          pytest -m smoke \
+                 --tracing=retain-on-failure \
+                 --screenshot=only-on-failure \
+                 --output=test-results \
+                 --html=smoke-report.html --self-contained-html
+
+      - name: Upload smoke report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-report
+          path: smoke-report.html
+          retention-days: 14
+
+      - name: Upload traces & screenshots (failures)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-artifacts
+          path: test-results/
+          retention-days: 14
+          if-no-files-found: ignore

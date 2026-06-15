@@ -234,6 +234,7 @@ def test_search_with_leading_trailing_spaces(page: Page):
 # ===========================================================================
 
 # Кейс 328: Положительный сценарий — поиск через Enter
+@pytest.mark.smoke
 def test_search_via_enter_shows_results_page(page: Page):
     """Клик на поле → ввод запроса → Enter — открывается страница
     с результатами поиска."""

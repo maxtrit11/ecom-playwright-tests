@@ -6,14 +6,8 @@ on:
   schedule:
     - cron: "0 2 * * *"          # каждую ночь ~02:00 UTC (~05:00 Кишинёв)
   workflow_dispatch: {}           # ручной запуск кнопкой в Actions
-  push:
-    branches: [main]
-    paths:                        # гоняем только когда меняются сами тесты
-      - "tests/**"
-      - "conftest.py"
-      - "pytest.ini"
-      - "requirements.txt"
-      - ".github/workflows/e2e.yml"
+  # Полную суиту по каждому пушу не гоняем (долго + флаки под нагрузкой) —
+  # на пуш работает быстрый smoke (.github/workflows/smoke.yml).
 
 # Не копим параллельные прогоны на одной ветке — отменяем предыдущий.
 concurrency:
