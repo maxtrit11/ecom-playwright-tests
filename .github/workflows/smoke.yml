@@ -40,6 +40,21 @@ jobs:
       - name: Install Playwright browser (chromium)
         run: python -m playwright install --with-deps chromium
 
+      # users.json (реальные учётки) в .gitignore — пишем его из секрета
+      # USERS_JSON (нужен для смоук-теста личного кабинета). Без секрета —
+      # копируем example, чтобы коллекция не падала.
+      - name: Provision test credentials
+        env:
+          USERS_JSON: ${{ secrets.USERS_JSON }}
+        run: |
+          if [ -n "$USERS_JSON" ]; then
+            printf '%s' "$USERS_JSON" > tests/fixtures/users.json
+            echo "users.json written from secret"
+          else
+            cp tests/fixtures/users.example.json tests/fixtures/users.json
+            echo "::warning::USERS_JSON secret not set — using example creds"
+          fi
+
       # Smoke-набор не делает реальных сабмитов, поэтому хватает headless —
       # так быстрее. Реран флака берётся из pytest.ini.
       - name: Run smoke tests

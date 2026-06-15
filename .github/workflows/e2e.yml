@@ -35,6 +35,21 @@ jobs:
       - name: Install Playwright browser (chromium)
         run: python -m playwright install --with-deps chromium
 
+      # users.json (реальные учётки) лежит в .gitignore и в репо его нет.
+      # Пишем его из секрета USERS_JSON. Если секрет не задан — копируем
+      # example, чтобы коллекция не падала (логин-тесты тогда упадут осмысленно).
+      - name: Provision test credentials
+        env:
+          USERS_JSON: ${{ secrets.USERS_JSON }}
+        run: |
+          if [ -n "$USERS_JSON" ]; then
+            printf '%s' "$USERS_JSON" > tests/fixtures/users.json
+            echo "users.json written from secret"
+          else
+            cp tests/fixtures/users.example.json tests/fixtures/users.json
+            echo "::warning::USERS_JSON secret not set — using example creds (login-зависимые тесты упадут)"
+          fi
+
       # ВАЖНО: гоняем в --headed под Xvfb. На стейдже headless-сабмиты
       # предзаказа/заявок блокируются бот-защитой → в headless они дают
       # ложные падения. Под виртуальным дисплеем (Xvfb) браузер «headed»,
