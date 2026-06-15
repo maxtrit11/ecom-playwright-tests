@@ -1,0 +1,73 @@
+name: E2E Tests (stage.ecom.md)
+
+# Black-box E2E прогон против живого стейджа. Доступ к коду ECOM не нужен —
+# тесты ходят на https://stage.ecom.md по HTTP, как обычный браузер.
+on:
+  schedule:
+    - cron: "0 2 * * *"          # каждую ночь ~02:00 UTC (~05:00 Кишинёв)
+  workflow_dispatch: {}           # ручной запуск кнопкой в Actions
+  push:
+    branches: [main]
+    paths:                        # гоняем только когда меняются сами тесты
+      - "tests/**"
+      - "conftest.py"
+      - "pytest.ini"
+      - "requirements.txt"
+      - ".github/workflows/e2e.yml"
+
+# Не копим параллельные прогоны на одной ветке — отменяем предыдущий.
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright browser (chromium)
+        run: python -m playwright install --with-deps chromium
+
+      # ВАЖНО: гоняем в --headed под Xvfb. На стейдже headless-сабмиты
+      # предзаказа/заявок блокируются бот-защитой → в headless они дают
+      # ложные падения. Под виртуальным дисплеем (Xvfb) браузер «headed»,
+      # и реальные сабмиты проходят штатно. Лиды на стейдже не важны.
+      # Реран флака уже задан в pytest.ini (--reruns 2 --reruns-delay 5).
+      - name: Run E2E tests (headed via Xvfb)
+        run: |
+          xvfb-run --auto-servernum \
+            pytest --headed --browser chromium \
+                   --tracing=retain-on-failure \
+                   --screenshot=only-on-failure \
+                   --output=test-results \
+                   --html=report.html --self-contained-html
+
+      - name: Upload HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-html-report
+          path: report.html
+          retention-days: 14
+
+      - name: Upload traces & screenshots (failures)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: test-results/
+          retention-days: 14
+          if-no-files-found: ignore
