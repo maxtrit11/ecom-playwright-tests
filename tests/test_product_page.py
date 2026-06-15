@@ -147,7 +147,6 @@ def test_add_to_compare_increments_header_counter(page: Page):
     count_before = _header_compare_count(page)
 
     btn = page.locator(BTN_COMPARE).first
-    bg_before = btn.evaluate("el => getComputedStyle(el).backgroundColor")
 
     btn.click()
     page.wait_for_timeout(800)
@@ -157,8 +156,11 @@ def test_add_to_compare_increments_header_counter(page: Page):
         f"Счётчик сравнения не увеличился: {count_before} → {count_after}"
     )
 
-    bg_after = btn.evaluate("el => getComputedStyle(el).backgroundColor")
-    assert bg_before != bg_after, "Стиль кнопки Сравнение не изменился после клика"
+    # Активное состояние кнопки выражается классом is-active (а не сменой
+    # background-color: у активной кнопки фон остаётся белым, active-стиль даёт
+    # класс/цвет иконки — проверено через MCP). Старый assert на смену bg давал
+    # ложное падение.
+    expect(btn).to_have_class(re.compile(r"\bis-active\b"))
 
 
 # ===========================================================================

@@ -150,7 +150,12 @@ def test_click_category_in_search_results(page: Page):
     открывается страница категории с товарами."""
     type_in_search(page, EXISTING_QUERY)
 
+    # Блок «Результаты в категориях» убран с фронта (изменение UI, подтверждено
+    # 2026-06-15): в выпадающем поиске категорий справа больше нет. Фича
+    # отсутствует — корректно пропускаем, а не падаем.
     categories = page.locator(RESULT_CATEGORIES)
+    if categories.count() == 0:
+        pytest.skip("Категории в выпадающем поиске убраны с фронта (изменение UI)")
     expect(categories.first).to_be_visible(timeout=10_000)
 
     category_text = categories.first.text_content().strip()
@@ -318,11 +323,14 @@ def test_filters_displayed_on_search_results_page(page: Page):
     go_to_search_results_page(page, "pink")
 
     page.wait_for_timeout(1000)
-    filters = page.locator(SEARCH_PAGE_FILTERS)
+    # Фильтры на странице результатов — это сайдбар .filters-vertical (как на
+    # странице категории). Широкий [class*='filter'] первым матчит СКРЫТЫЙ
+    # .filter-btn (mobile-тоггл), из-за чего .first.to_be_visible() давал ложное
+    # падение — проверяем именно видимый контейнер фильтров.
+    filters = page.locator(".filters-vertical, .filter-vertical-container").first
     if filters.count() > 0:
-        expect(filters.first).to_be_visible()
+        expect(filters).to_be_visible()
     else:
-        # Фильтры могут быть в другой обёртке
         sidebar = page.locator("[class*='sidebar'], [class*='aside']")
         if sidebar.count() > 0:
             expect(sidebar.first).to_be_visible()

@@ -233,28 +233,39 @@ def test_filter_persists_on_reload(page: Page):
 def test_multiple_filters_narrow_results(page: Page):
     """Применить чекбоксы из двух разных групп — выдача не больше, чем после первого.
 
-    Ловим `for=` оба label'а ДО первого клика, потому что сайдбар может
-    перестроиться после первого применения."""
-    groups = page.locator(FILTER_GROUP)
-    label_ids: list[str] = []
-    for i in range(groups.count()):
-        g = groups.nth(i)
-        items = g.locator(CHECKBOX_LABEL)
-        if items.count() >= 1:
-            lid = items.first.get_attribute("for")
-            if lid:
-                label_ids.append(lid)
-        if len(label_ids) == 2:
-            break
-    if len(label_ids) < 2:
-        pytest.skip("Недостаточно групп с чекбоксами (нужно ≥2)")
+    Применяем первый фильтр, затем берём ВТОРУЮ опцию среди оставшихся
+    АКТИВНЫХ: бэкенд дизейблит опции, которые дали бы 0 товаров (badge «(0)»),
+    и кликать по такому чекбоксу нельзя — Playwright ждёт enabled и падает по
+    таймауту. После сужения до одного товара активными остаются только опции,
+    совпадающие с ним, поэтому ищем второй фильтр уже ПОСЛЕ первого клика."""
+    group = _first_group_with_checkboxes(page, min_options=1)
+    if group is None:
+        pytest.skip("На этой категории нет чекбокс-фильтров")
 
-    page.locator(f'label[for="{label_ids[0]}"]').first.click()
+    first_id = group.locator(CHECKBOX_LABEL).first.get_attribute("for")
+    assert first_id, "У label чекбокса не оказалось for-атрибута"
+
+    page.locator(f'label[for="{first_id}"]').first.click()
     page.wait_for_url(re.compile(r"filters="), timeout=10_000)
     _wait_after_filter(page)
     count_one = _found_count(page)
 
-    page.locator(f'label[for="{label_ids[1]}"]').first.click()
+    # Ищем вторую опцию, которая осталась активной (input не disabled)
+    # и отличается от первой — клик по ней реально применим.
+    second_id = page.evaluate(
+        """(firstId) => {
+            const inputs = [...document.querySelectorAll(
+              '.filters-vertical__content__params__item__content__checkboxes__item input'
+            )];
+            const ok = inputs.find(i => !i.disabled && i.id && i.id !== firstId);
+            return ok ? ok.id : null;
+        }""",
+        first_id,
+    )
+    if not second_id:
+        pytest.skip("После первого фильтра не осталось активных опций для второго")
+
+    page.locator(f'label[for="{second_id}"]').first.click()
     _wait_after_filter(page)
     count_two = _found_count(page)
 

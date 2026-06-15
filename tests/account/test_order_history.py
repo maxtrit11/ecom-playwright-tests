@@ -28,8 +28,12 @@ STATUS_INPUT = ".account-table__filters .vs__search"
 DATE_PICKER = ".account-table__filters .mx-datepicker"
 DATE_INPUT = ".account-table__filters .mx-input"
 
-# Кнопка раскрытия деталей заказа
-ORDER_EXPAND_BTN = ".account-table__content__table__list__row__item--last .icon"
+# Кнопка просмотра деталей заказа — иконка «глаз» (svg.open) в колонке
+# «Действия». Рядом стоят кнопки «избранное» и «скачать PDF», поэтому
+# нельзя брать просто .last — это PDF, а не детали.
+ORDER_VIEW_BTN = "button:has(svg.open)"
+# Модалка деталей заказа
+ORDER_DETAILS_MODAL = ".modal__authentification__ecom"
 
 # Sidebar
 SIDEBAR = ".account-sidebar"
@@ -263,22 +267,13 @@ def test_open_order_details(page: Page):
     rows = page.locator(ORDER_ROW)
     expect(rows.first).to_be_visible(timeout=10_000)
 
-    # Нажать на кнопку раскрытия первого заказа
-    expand_btn = rows.first.locator(".icon, button, a").last
-    expand_btn.click()
-    page.wait_for_timeout(2000)
+    # Нажать на «глаз» первого заказа (именно просмотр, не PDF/избранное)
+    rows.first.locator(ORDER_VIEW_BTN).click()
 
-    # Проверяем что появились детали (попап или раскрытая секция)
-    # Ищем любой блок с деталями заказа
-    details_visible = (
-        page.locator(".modal, .popup, .order-detail, [class*='detail']").count() > 0
-        or page.locator(ORDER_ROW).first.locator("[class*='expand'], [class*='detail'], [class*='info']").count() > 0
-    )
-
-    # Если нет попапа — возможно это ссылка на отдельную страницу
-    if not details_visible:
-        # URL мог измениться на страницу деталей
-        assert "account" in page.url
+    # Открывается модалка с деталями заказа
+    details = page.locator(ORDER_DETAILS_MODAL).filter(has_text="Заказ")
+    expect(details).to_be_visible(timeout=10_000)
+    expect(details).to_contain_text("Статус")
 
 
 # ===========================================================================
@@ -290,23 +285,14 @@ def test_close_order_details(page: Page):
     rows = page.locator(ORDER_ROW)
     expect(rows.first).to_be_visible(timeout=10_000)
 
-    # Открыть детали
-    expand_btn = rows.first.locator(".icon, button, a").last
-    expand_btn.click()
-    page.wait_for_timeout(2000)
+    # Открыть детали («глаз»)
+    rows.first.locator(ORDER_VIEW_BTN).click()
+    details = page.locator(ORDER_DETAILS_MODAL).filter(has_text="Заказ")
+    expect(details).to_be_visible(timeout=10_000)
 
-    # Закрыть (крестик в попапе или кнопка назад)
-    close_btn = page.locator(
-        ".modal .close, .popup .close, [class*='close'], "
-        "button:has-text('×'), button:has-text('Закрыть')"
-    )
-    if close_btn.count() > 0 and close_btn.first.is_visible():
-        close_btn.first.click()
-        page.wait_for_timeout(1000)
-    else:
-        # Если открылась отдельная страница — вернуться назад
-        page.go_back()
-        page.wait_for_timeout(2000)
+    # Закрыть по крестику
+    details.locator(".btn__close").click()
 
-    # Пользователь на странице «История заказов»
+    # Модалка закрыта, пользователь остаётся на «История заказов»
+    expect(details).not_to_be_visible(timeout=10_000)
     expect(page).to_have_url(re.compile(r"account/history"), timeout=10_000)
