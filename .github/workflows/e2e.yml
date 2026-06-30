@@ -17,11 +17,14 @@ concurrency:
 jobs:
   e2e:
     runs-on: ubuntu-latest
-    # 90, а не 60: полная суита (~168 тестов) headed под Xvfb с ретраями на
-    # флакающем стейдже не влезала в час и убивалась по стене (report.html
-    # не успевал создаться). Per-test --timeout=120 (pytest.ini) не даёт
-    # одному зависшему тесту съесть бюджет; 90 мин — потолок с запасом.
-    timeout-minutes: 90
+    # 120, а не 90: полная суита (~168 тестов) headed под Xvfb с ретраями
+    # на флакающем стейдже последовательно не влезала и в 90 мин. Параллелить
+    # (xdist/шардинг) сознательно не стали — стейдж залипает под нагрузкой и
+    # даёт каскад ложных падений; ночному cron'у длительность не критична,
+    # а лишние фолс-позитивы — да. Поэтому растим единственный дефицитный
+    # ресурс — время. Жёсткую остановку с гарантией отчёта держит
+    # --session-timeout=6300 (105 мин) в шаге прогона, см. ниже.
+    timeout-minutes: 120
 
     steps:
       - name: Checkout
@@ -58,11 +61,23 @@ jobs:
       # предзаказа/заявок блокируются бот-защитой → в headless они дают
       # ложные падения. Под виртуальным дисплеем (Xvfb) браузер «headed»,
       # и реальные сабмиты проходят штатно. Лиды на стейдже не важны.
-      # Реран флака уже задан в pytest.ini (--reruns 2 --reruns-delay 5).
+      #
+      # --session-timeout=6300 (105 мин): страховка от стены job'а (120 мин).
+      # Когда CI убивал прогон по стене, report.html не успевал создаться
+      # (теряли артефакты). Теперь pytest сам мягко выходит на 105-й минуте:
+      # текущий тест дорабатывает (≤120s по --timeout), отчёт генерится и
+      # грузится в оставшийся 15-мин запас. Лучше «прогнали сколько успели +
+      # есть отчёт», чем hard-kill без артефактов.
+      #
+      # --reruns 1 (override pytest.ini, где 2): на флакающем стейдже двойной
+      # ретрай ×120s раздувает бюджет; одиночного ретрая хватает погасить флак,
+      # а суммарное время прогона падает ~на треть.
       - name: Run E2E tests (headed via Xvfb)
         run: |
           xvfb-run --auto-servernum \
             pytest --headed --browser chromium \
+                   --reruns 1 \
+                   --session-timeout=6300 \
                    --tracing=retain-on-failure \
                    --screenshot=only-on-failure \
                    --output=test-results \
@@ -74,7 +89,7 @@ jobs:
         with:
           name: pytest-html-report
           path: report.html
-          retention-days: 14
+          retention-days: 5
 
       - name: Upload traces & screenshots (failures)
         if: always()
@@ -82,5 +97,5 @@ jobs:
         with:
           name: playwright-artifacts
           path: test-results/
-          retention-days: 14
+          retention-days: 5
           if-no-files-found: ignore
