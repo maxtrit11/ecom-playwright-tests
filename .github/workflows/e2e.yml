@@ -62,12 +62,21 @@ jobs:
       # ложные падения. Под виртуальным дисплеем (Xvfb) браузер «headed»,
       # и реальные сабмиты проходят штатно. Лиды на стейдже не важны.
       #
-      # --session-timeout=6300 (105 мин): страховка от стены job'а (120 мин).
-      # Когда CI убивал прогон по стене, report.html не успевал создаться
-      # (теряли артефакты). Теперь pytest сам мягко выходит на 105-й минуте:
-      # текущий тест дорабатывает (≤120s по --timeout), отчёт генерится и
-      # грузится в оставшийся 15-мин запас. Лучше «прогнали сколько успели +
-      # есть отчёт», чем hard-kill без артефактов.
+      # --session-timeout=5400 (90 мин): страховка от стены job'а (120 мин).
+      # Раньше стоял 6300 (105 мин), но однажды прогон всё равно упёрся в
+      # 120-мин стену (report.html не успел, артефакты потеряли) — 15-мин
+      # буфера не хватило. Даём 30 мин запаса: pytest мягко выходит на 90-й
+      # минуте, текущий тест дорабатывает (≤120s по --timeout), отчёт генерится
+      # и грузится с большим запасом. Лучше «прогнали сколько успели + есть
+      # отчёт», чем hard-kill без артефактов.
+      #
+      # БЕЗ --tracing: на флакающем стейдже десятки (в основном ложных) падений
+      # плодили сотни МБ трейсов за ночь и забивали storage-квоту аккаунта
+      # (500 МБ) → upload-artifact начал падать с "storage quota has been hit".
+      # Фейлы мы и так перепроверяем вживую (MCP/браузер), трейсы почти не
+      # использовали. Оставляем только скриншоты фейлов, вшитые в self-contained
+      # report.html — этого хватает для триажа, а весит на порядок меньше. Бонус:
+      # без записи трейсов в teardown прогон ещё и быстрее (меньше давит на стену).
       #
       # --reruns 1 (override pytest.ini, где 2): на флакающем стейдже двойной
       # ретрай ×120s раздувает бюджет; одиночного ретрая хватает погасить флак,
@@ -77,25 +86,19 @@ jobs:
           xvfb-run --auto-servernum \
             pytest --headed --browser chromium \
                    --reruns 1 \
-                   --session-timeout=6300 \
-                   --tracing=retain-on-failure \
+                   --session-timeout=5400 \
                    --screenshot=only-on-failure \
                    --output=test-results \
                    --html=report.html --self-contained-html
 
+      # Единственный артефакт — self-contained report.html (пасс/фейл-таблица
+      # + вшитые скриншоты фейлов). test-results/ отдельно не грузим: трейсов
+      # больше нет, а скриншоты уже внутри отчёта. retention 2 дня: держим
+      # storage-квоту аккаунта под контролем (ночной прогон каждый день).
       - name: Upload HTML report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pytest-html-report
           path: report.html
-          retention-days: 5
-
-      - name: Upload traces & screenshots (failures)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-artifacts
-          path: test-results/
-          retention-days: 5
-          if-no-files-found: ignore
+          retention-days: 2
