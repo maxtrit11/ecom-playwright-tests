@@ -1,4 +1,9 @@
-"""Тесты страницы Личные данные"""
+"""Тесты страницы Личные данные
+
+Весь файл требует реального входа в кабинет — см. маркер `requires_auth`
+в pytest.ini: с IP GitHub Actions stage не пускает в аккаунт, поэтому в
+ночном CI эти тесты исключаются, а локально гоняются как обычно.
+"""
 
 import json
 import re
@@ -7,6 +12,8 @@ from pathlib import Path
 
 import pytest
 from playwright.sync_api import Page, expect
+
+pytestmark = pytest.mark.requires_auth
 
 # Загрузка данных пользователей
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
