@@ -91,13 +91,33 @@ def _sort_option(page: Page, label: str) -> Locator:
     return page.locator(SORT_LIST).get_by_text(label, exact=True)
 
 
+def _open_sort_dropdown(page: Page) -> None:
+    """Раскрыть список сортировки, повторяя клик, пока не появится `.show`.
+
+    Список всегда лежит в DOM (`display: flex`), видимым его делает класс
+    `show` на `.sorting-bar__list`. Одиночный клик ненадёжен: после перехода
+    по пагинации компонент перерисовывается и первый клик теряется — опция
+    остаётся невидимой, и `click()` по ней висит до таймаута (наблюдалось
+    2026-08-03 в `test_sort_resets_pagination_to_first_page`).
+    """
+    for attempt in range(3):
+        page.locator(SORT_BTN).click()
+        try:
+            expect(page.locator(f"{SORT_LIST}.show")).to_be_visible(timeout=3_000)
+            return
+        except AssertionError:
+            if attempt == 2:
+                raise
+            page.wait_for_timeout(500)
+
+
 def _pick_sort(page: Page, label: str) -> None:
     """Открыть дропдаун сортировки и выбрать опцию по подписи.
 
     Дропдаун закрывается после выбора, поэтому каждый раз открываем заново.
     Ждём появления/смены sort= в URL (переход идёт через pushState — не
     через навигацию) и пересчёта выдачи."""
-    page.locator(SORT_BTN).click()
+    _open_sort_dropdown(page)
     page.wait_for_timeout(400)
     _sort_option(page, label).first.click()
     page.wait_for_function(

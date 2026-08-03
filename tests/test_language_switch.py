@@ -27,8 +27,16 @@ def open_lang_dropdown(page: Page):
     """Открыть выпадающий список языков."""
     dropdown_btn = page.locator(LANG_DROPDOWN_BTN)
     if dropdown_btn.count() > 0 and dropdown_btn.first.is_visible():
-        dropdown_btn.first.click()
-        expect(page.locator(f"{LANG_LIST}.show")).to_be_visible(timeout=3_000)
+        # Первый клик может потеряться, если Vue ещё не догидрировался, —
+        # повторяем, пока список не раскроется.
+        for attempt in range(3):
+            dropdown_btn.first.click()
+            try:
+                expect(page.locator(f"{LANG_LIST}.show")).to_be_visible(timeout=3_000)
+                return
+            except AssertionError:
+                if attempt == 2:
+                    raise
         return
 
     # Альтернатива — кнопка nav__item с текстом языка
@@ -42,6 +50,27 @@ def open_lang_dropdown(page: Page):
             return
 
 
+def _wait_lang_applied(page: Page, lang_code: str, timeout: int = 15_000):
+    """Дождаться, пока язык реально применится.
+
+    `networkidle` здесь не годится: клик по языковой ссылке запускает навигацию
+    с задержкой (до ~3 с), сеть в этот момент тиха, и ожидание резолвится ещё на
+    старом документе — тест читал прежний `<html lang>`.
+    """
+    try:
+        page.wait_for_function(
+            "code => (document.documentElement.lang || '').toLowerCase() === code",
+            arg=lang_code.lower(),
+            timeout=timeout,
+        )
+    except Exception:
+        pass
+    try:
+        page.wait_for_load_state("networkidle", timeout=5_000)
+    except Exception:
+        pass
+
+
 def switch_to_language(page: Page, lang_code: str):
     """Переключить язык на указанный код (ru/ro).
     Ссылка на язык внутри .sub__item.show ищется по тексту, а не по href,
@@ -51,7 +80,7 @@ def switch_to_language(page: Page, lang_code: str):
     lang_link = page.locator(f"{LANG_LIST}.show a.sub__item--lang", has_text=re.compile(rf"^\s*{lang_code}\s*$", re.IGNORECASE))
     if lang_link.count() > 0:
         lang_link.first.click()
-        page.wait_for_load_state("networkidle")
+        _wait_lang_applied(page, lang_code)
         return
 
     # Запасной путь — поиск по href (для тем-страниц со схемой /ru/.../ro/...)
@@ -59,7 +88,7 @@ def switch_to_language(page: Page, lang_code: str):
     for i in range(lang_link.count()):
         if lang_link.nth(i).is_visible():
             lang_link.nth(i).click()
-            page.wait_for_load_state("networkidle")
+            _wait_lang_applied(page, lang_code)
             return
 
 

@@ -86,7 +86,16 @@ _JS_ALL_KEYS = """() => {
 # Хелперы
 # ---------------------------------------------------------------------------
 def _active_page(page: Page) -> int:
-    """Номер активной страницы (из подсвеченной кнопки)."""
+    """Номер активной страницы (из подсвеченной кнопки), либо -1 если её нет.
+
+    Подсветки может не быть вообще: при мусорном `?page=0` / `?page=abc` сайт
+    отдаёт нормальный грид и пагинацию, но ни одной кнопке не ставит `.active`
+    (проверено в браузере 2026-07-30). Раньше хелпер в таком случае висел 45s на
+    `text_content()` и валил тест по таймауту вместо того, чтобы вернуть «нет
+    активной» — а именно этот вариант тест и допускает.
+    """
+    if page.locator(ACTIVE_BUTTON).count() == 0:
+        return -1
     txt = page.locator(ACTIVE_BUTTON).first.text_content() or ""
     m = re.search(r"\d+", txt)
     return int(m.group()) if m else -1
@@ -156,6 +165,32 @@ def _wait_first_card_changed(page: Page, before_key: str | None,
         arg=before_key,
         timeout=timeout,
     )
+
+
+def _wait_card_keys(page: Page, expected: list[str], timeout: int = 15_000) -> None:
+    """Дождаться, пока грид покажет ровно `expected` (порядок важен).
+
+    Не бросает исключение: если набор так и не совпал, пусть падает сам ассерт
+    теста — с понятным diff'ом, а не с TimeoutError.
+    """
+    try:
+        page.wait_for_function(
+            """(expected) => {
+                const cards = [...document.querySelectorAll('.product__items .product__item')];
+                if (cards.length !== expected.length) return false;
+                return cards.every((card, i) => {
+                    const a = [...card.querySelectorAll('a')]
+                        .map(x => x.getAttribute('href'))
+                        .find(h => h && !h.includes('scrollTo'));
+                    const key = a || card.textContent.replace(/\\s+/g, ' ').trim().slice(0, 40);
+                    return key === expected[i];
+                });
+            }""",
+            arg=expected,
+            timeout=timeout,
+        )
+    except Exception:
+        pass
 
 
 def _go_to_page(page: Page, action, target: int) -> None:
@@ -445,6 +480,12 @@ def test_browser_back_navigates_to_previous_page(page: Page):
     page.wait_for_load_state("networkidle", timeout=15_000)
 
     assert _active_page(page) == 1, "После browser back активна не первая страница"
+
+    # Подсветка страницы возвращается РАНЬШЕ, чем перерисовывается грид: сразу
+    # после back в нём успевает оказаться неполный набор карточек, и мгновенное
+    # сравнение падало на живом рабочем сайте (проверено в браузере 2026-07-30 —
+    # после back грид корректно совпадает со страницей 1). Ждём восстановления.
+    _wait_card_keys(page, keys_p1)
     assert _card_keys(page) == keys_p1, (
         "После browser back грид не вернулся к товарам страницы 1"
     )

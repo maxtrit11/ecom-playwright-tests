@@ -6,8 +6,14 @@
   сначала категории (id `radio-<subcategoryId>`), затем
   «Все параметры» (`input[name="show"][value="showAll"]`) и
   «Различия» (`input[name="show"][value="showDiff"]`).
-- Карточка товара в сравнении: `.compare__item`. Кнопка удаления одного
-  товара: `button.btn__delete[title="Удалить товар"]`.
+- Таблица сравнения перевёрстана на CSS-grid (проверено 2026-08-03):
+  `.compare__table > .compare__table-grid`, внутри по порядку идут карточки
+  товаров `.compare__table-product` (по одной на товар), затем строки
+  характеристик — `.compare__char-head` (название) и следом по одной
+  `.compare__char-cell` на каждый товар. Старых `.compare__item` и
+  `.compare__proprieties-item` в DOM больше нет.
+- Кнопка удаления одного товара: `button.btn__delete[title="Удалить товар"]`
+  внутри `.compare__table-product`.
 - Кнопка «Удалить все товары» — `button.btn__link` с этим же текстом.
 - Заглушка пустого списка — `.favorites__empty` с текстом
   «Нет товаров для сравнения» + кнопка «Посмотреть товары» (тоже
@@ -42,11 +48,12 @@ CATEGORY_FILTER_ITEM = ".compare__categories .compare__filters-item"
 INPUT_SHOW_ALL = 'input[name="show"][value="showAll"]'
 INPUT_SHOW_DIFF = 'input[name="show"][value="showDiff"]'
 
-# Строки характеристик в сравнении
-PROP_ITEM = ".compare__proprieties-item"
+# Строки характеристик в сравнении: заголовок строки + ячейки значений
+PROP_ITEM = ".compare__char-head"
+PROP_CELL = ".compare__char-cell"
 
 # Карточки товаров
-COMPARE_ITEM = ".compare__item"
+COMPARE_ITEM = ".compare__table-product"
 BTN_DELETE_ONE = f'{COMPARE_ITEM} button.btn__delete[title="Удалить товар"]'
 
 # Кнопки «Удалить все товары» и «Посмотреть товары» — обе `button.btn__link`
@@ -295,26 +302,24 @@ def test_show_diff_keeps_only_differing_rows(two_same_category: Page):
 
     # Для каждой видимой строки характеристики ищем значения каждого товара
     # в той же строке и проверяем что они различаются.
+    # Таблица — плоский grid: за каждым `.compare__char-head` идут ячейки
+    # `.compare__char-cell` (по одной на товар) до следующего заголовка,
+    # поэтому строку собираем обходом соседей, а не через общий контейнер.
     has_identical_row = page.evaluate(
         """() => {
-            const rows = Array.from(document.querySelectorAll('.compare__proprieties-item'));
-            // Каждая строка имеет parent с детьми-«значениями» — берём
-            // siblings или ближайший контейнер строки сравнения.
-            // Простая эвристика: вокруг каждой .compare__proprieties-item
-            // в DOM рядом должны быть ячейки со значениями товаров.
-            for (const row of rows) {
-                const wrap = row.closest('li, tr, div.compare__row, [class*="row"]') || row.parentElement;
-                if (!wrap) continue;
-                // Берём текстовые значения соседних элементов
-                const cellTexts = Array.from(wrap.children)
-                    .filter(c => c !== row)
-                    .map(c => (c.textContent || '').trim())
-                    .filter(t => t.length > 0);
-                if (cellTexts.length >= 2) {
-                    const unique = new Set(cellTexts);
-                    if (unique.size === 1) {
-                        return { row: row.textContent.trim().slice(0, 60), values: cellTexts };
-                    }
+            const grid = document.querySelector('.compare__table-grid');
+            if (!grid) return null;
+            const kids = Array.from(grid.children);
+            for (let i = 0; i < kids.length; i++) {
+                if (!kids[i].classList.contains('compare__char-head')) continue;
+                const values = [];
+                for (let j = i + 1; j < kids.length; j++) {
+                    if (!kids[j].classList.contains('compare__char-cell')) break;
+                    values.push((kids[j].textContent || '').trim());
+                }
+                const filled = values.filter(t => t.length > 0);
+                if (filled.length >= 2 && new Set(filled).size === 1) {
+                    return { row: kids[i].textContent.trim().slice(0, 60), values: filled };
                 }
             }
             return null;

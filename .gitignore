@@ -46,6 +46,23 @@ suite*_cases.txt
 credit_cases.txt
 bug_report_*.md
 
+# --- Логи и отчёты прогонов ---
+_full_run_*.log
+_local_run.log
+_junit/
+_report_extract/
+_report_main.html
+report.html
+pytest-html-report*.zip
+
+# --- Локальные выгрузки документации и тест-кейсов ---
+_brd_*.txt
+_docx_extract.txt
+*.pdf
+*.docx
+*.csv
+.info/
+
 # одиночные «файлы-артефакты»
 0
 0.5
@@ -58,3 +75,43 @@ b.offsetParent
 \(\{cls
 \(\{tag
 \(\{text
+
+# «файлы-артефакты» shell-глобов: куски JS/Python, попавшие в имена файлов.
+# Всё, что начинается со скобки или заканчивается ей, плюс отдельные слова.
+\(*
+*\)
+\!i.disabled
+0,
+0,-
+0`
+1
+2
+30s
+5
+5000
+5d
+90
+Locator
+None
+`min_options`
+a
+bool
+e.children.length
+el.remove())
+errors_before
+exit
+float
+h
+int
+list\[str\]
+location.search.includes('filters
+page.locator(CARD).count(),+
+тАЮS-a
+r.width
+route.abort('failed'))
+s.textContent.trim())
+site.shopUrl
+str
+testiny-*.csv
+typeof
+v

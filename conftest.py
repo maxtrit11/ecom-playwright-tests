@@ -1,3 +1,4 @@
+import os
 import sys
 
 import pytest
@@ -13,12 +14,97 @@ def browser_context_args(browser_context_args):
 
 
 # ---------------------------------------------------------------------------
+# Ожидание гидрации Nuxt.
+#
+# Стенд отдаёт разметку с сервера, поэтому кнопки ВИДНЫ раньше, чем Vue навесит
+# на них обработчики. Тест, который дождался только видимости и сразу кликнул,
+# теряет клик: страница выглядит готовой, но ещё не реагирует. Особенно коварен
+# `click(force=True)` — force отключает проверки готовности, так что Playwright
+# даже не пытается дождаться интерактивности.
+#
+# Проверено экспериментально (2026-07-29, по 3 прогона на вариант).
+#
+# Карточка товара — хватает `window.$nuxt`:
+#   только видимость   → 0/3   networkidle → 3/3 (~3.1s)   $nuxt → 3/3 (~1.2s)
+#
+# Главная (кнопка «Войти» в шапке) — `$nuxt` уже НЕ хватает: корень смонтирован,
+# а шапка навешивает обработчик чуть позже:
+#   $nuxt          → 0/3
+#   $nuxt + 300ms  → 3/3 (~1.4s)
+#   networkidle    → 3/3 (~2.2s)
+#   клик с повтором→ 3/3 (всегда срабатывает со 2-й попытки)
+#
+# Отсюда двухступенчатое ожидание: сначала `$nuxt` (монтирование корня), затем
+# ОГРАНИЧЕННОЕ ожидание сетевой тишины на до-монтирование дочерних компонентов.
+# Фиксированную паузу не ставим: 300ms достаточно локально, но под нагрузкой в
+# CI не хватит. Потолок в 3s держит цену: если стенд всё время что-то опрашивает
+# и тишина не наступает никогда, ждём 3s и идём дальше, а не висим до таймаута.
+# ---------------------------------------------------------------------------
+_HYDRATED_JS = "() => typeof window.$nuxt !== 'undefined'"
+_HYDRATION_TIMEOUT_MS = 30_000
+_SETTLE_TIMEOUT_MS = 3_000
+
+
+def wait_hydrated(page, timeout: int | None = None) -> None:
+    """Дождаться, пока Vue-приложение смонтируется и начнёт реагировать на клики.
+
+    Не бросает исключение: на редиректах, 404 и служебных страницах `$nuxt` может
+    не появиться, и падать из-за этого тест не должен — там просто нечего ждать.
+    """
+    try:
+        page.wait_for_function(_HYDRATED_JS, timeout=timeout or _HYDRATION_TIMEOUT_MS)
+    except Exception:
+        return
+    try:
+        page.wait_for_load_state("networkidle", timeout=_SETTLE_TIMEOUT_MS)
+    except Exception:
+        pass
+
+
+# Методы, после которых страница перезагружается с нуля и гидрацию нужно ждать
+# заново. SPA-переходы по клику сюда не входят — там приложение уже живое.
+_NAVIGATION_METHODS = ("goto", "reload", "go_back", "go_forward")
+
+
+@pytest.fixture(autouse=True)
+def _hydrate_after_navigation(page):
+    """Автоматически ждать гидрации после каждой полной навигации.
+
+    Обёртка на уровне conftest, а не правка каждого теста: иначе один забытый
+    `goto` возвращает ложное падение, которое выглядит как баг продукта.
+    """
+
+    def wrap(original):
+        def wrapper(*args, **kwargs):
+            result = original(*args, **kwargs)
+            wait_hydrated(page)
+            return result
+
+        return wrapper
+
+    for name in _NAVIGATION_METHODS:
+        setattr(page, name, wrap(getattr(page, name)))
+    yield
+
+
+@pytest.fixture
+def hydrated():
+    """Явное ожидание гидрации — для навигаций, которые инициирует само приложение.
+
+    Обёртка выше ловит только явные `goto`/`reload`/`go_back`. Но страница
+    перезагружается и сама: например, успешный логин делает полный редирект, после
+    которого шапка гидрируется заново — и клик по «Кабинет», сделанный сразу за
+    логином, снова теряется. Такие места помечаем вызовом `hydrated(page)`.
+    """
+    return wait_hydrated
+
+
+# ---------------------------------------------------------------------------
 # Динамический подбор товара со стоком.
-# Товары на stage то и дело уходят в «Предзаказ» (нет стока) — тогда кнопка
-# «В корзину» (`button.btn__add_cart`) задизейблена и фикстуры корзины/чекаута
-# не открывают форму. Чтобы не залипать на одном хардкоженном товаре, ищем
-# доступный: сначала среди кандидатов, потом — первый подходящий из категории.
-# Резолвится один раз за сессию и переиспользуется всеми тестами.
+# Товары на stage то и дело уходят в «Предзаказ» (нет стока) — тогда чекаут
+# непроходим и фикстуры корзины/чекаута падают. Чтобы не залипать на одном
+# хардкоженном товаре, ищем доступный: сначала среди кандидатов, потом — из
+# категории. Резолвится один раз за сессию и переиспользуется всеми тестами.
 # ---------------------------------------------------------------------------
 _PRODUCT_CANDIDATES = [
     "/ru/product/jbl-tour-one-m3-smart-tx-black",
@@ -30,96 +116,60 @@ _PRODUCT_CANDIDATES = [
 # Категории, со страниц которых добираем кандидатов, если список выше не дал стока.
 _CATEGORY_FALLBACKS = ["/ru/casti", "/ru/acustica-portabila", "/ru/catalog"]
 
-_ADD_TO_CART = "button.btn__add_cart"
-_HEADER_CART_BTN = 'button.btn__action.btn__cart[title="Корзина"]'
-_CART_MODAL_SHOWN = ".modal__cart.show"
-_BTN_CLEAR_ALL = "button.cart-products__header__clear-btn"
-_BTN_CART_CLOSE = '.modal__cart button.btn__close[title="Закрыть корзину"]'
-# При нулевом остатке корзина помечает товар этими классами, а кнопки
-# «Следующий шаг»/«Оформить заказ» остаются disabled (проверено через MCP).
-_STOCK_ERROR = ".cart__error-stock, .cart__product--out-of-stock"
+# Остаток лежит прямо в SSR-пейлоаде страницы (`window.__NUXT__`), который
+# инлайнится в HTML — то есть доступен сразу после domcontentloaded, без гидрации.
+# На карточке товара это `state.product.product.stock`, на странице категории —
+# объекты вида {slug, stock} внутри того же дерева.
+_PDP_STOCK_JS = "() => window.__NUXT__?.state?.product?.product?.stock ?? null"
 
-
-def _reset_cart(page):
-    """Обнулить анонимную корзину между проверками кандидатов."""
-    try:
-        page.evaluate(
-            """() => {
-                ['cart-data','cart-version','cart-owner-token'].forEach(k => {
-                    try { localStorage.removeItem(k); } catch (e) {}
-                });
-                ['cart','cart-owner-token'].forEach(n => {
-                    document.cookie = n + '=; path=/; max-age=0';
-                });
-            }"""
-        )
-    except Exception:
-        pass
+# Обход дерева __NUXT__: собираем все объекты, у которых есть и slug, и stock.
+_CATEGORY_STOCK_JS = """
+() => {
+  const seen = new Set();
+  const out = [];
+  const walk = (o) => {
+    if (!o || typeof o !== 'object' || seen.has(o) || out.length > 500) return;
+    seen.add(o);
+    if (!Array.isArray(o) && 'stock' in o && (o.slug || o.url)) {
+      out.push({ slug: o.slug || o.url, stock: o.stock });
+    }
+    for (const k of Object.keys(o)) walk(o[k]);
+  };
+  walk(window.__NUXT__);
+  return [...new Map(out.map(p => [p.slug, p])).values()]
+           .filter(p => Number(p.stock) > 0)
+           .map(p => p.slug);
+}
+"""
 
 
 def _has_stock(page, product_url: str) -> bool:
-    """Проверить, что товар РЕАЛЬНО доступен к заказу.
+    """Проверить реальный остаток товара по данным страницы.
 
-    ВНИМАНИЕ (подтверждено через MCP на живом stage): кнопка «В корзину» на PDP
-    остаётся активной даже при нулевом остатке — одной её НЕДОСТАТОЧНО. Реальный
-    сток подтверждаем добавлением в корзину: при стоке 0 корзина рисует
-    `.cart__error-stock` / `.cart__product--out-of-stock`, а кнопка «Следующий шаг»
-    остаётся disabled (и весь чекаут/сабмит-сценарий становится непроходимым).
+    ВАЖНО (проверено на живом stage 2026-07-29): по кнопке «В корзину» сток НЕ
+    определяется — в данных одновременно `stock: 0` и `available: true`, а вёрстка
+    смотрит на `available`, поэтому кнопка остаётся активной при нулевом остатке
+    (меняется лишь текст на «Предзаказ»).
+
+    Раньше остаток подтверждался добавлением в корзину. Это работало, но стоило
+    ~15s на товар и ломалось от гонки с гидрацией: клик «В корзину» не доходил,
+    корзина оставалась пустой, и товар со стоком 43 отбраковывался как пустой.
+    Из-за этого фикстура уходила в перебор всех товаров категорий и съедала
+    десятки минут. Теперь читаем остаток напрямую — один evaluate вместо цикла.
     """
-    _reset_cart(page)
     try:
         page.goto(product_url, wait_until="domcontentloaded", timeout=60_000)
+        stock = page.evaluate(_PDP_STOCK_JS)
     except Exception:
         return False
-    try:
-        page.wait_for_selector(_ADD_TO_CART, timeout=8_000)
-    except Exception:
-        return False
-    btn = page.locator(_ADD_TO_CART).first
-    try:
-        # is_enabled() падает на этой разметке («не button»), поэтому проверяем
-        # атрибут disabled напрямую + что это именно кнопка «В корзину».
-        looks_available = (
-            btn.is_visible()
-            and btn.get_attribute("disabled") is None
-            and "корзин" in (btn.inner_text() or "").lower()
-        )
-    except Exception:
-        return False
-    if not looks_available:
-        return False
-
-    # Подтверждаем реальный остаток через корзину.
-    try:
-        page.evaluate(
-            """() => document.querySelectorAll('[class*="b24-widget"]').forEach(el => el.remove())"""
-        )
-        btn.click()
-        page.wait_for_timeout(800)
-        page.locator(_HEADER_CART_BTN).click()
-        page.wait_for_selector(_CART_MODAL_SHOWN, timeout=10_000)
-        page.wait_for_timeout(600)
-        in_stock = page.locator(_STOCK_ERROR).count() == 0
-    except Exception:
-        return False
-    finally:
-        # Чистим корзину, чтобы следующий кандидат стартовал «с нуля».
-        try:
-            if page.locator(_BTN_CLEAR_ALL).count() > 0:
-                page.locator(_BTN_CLEAR_ALL).first.click()
-                page.wait_for_timeout(500)
-            page.locator(_BTN_CART_CLOSE).click()
-            page.wait_for_timeout(300)
-        except Exception:
-            pass
-    return in_stock
+    return isinstance(stock, (int, float)) and not isinstance(stock, bool) and stock > 0
 
 
 def _resolve_in_stock_products(page, count: int) -> list[str]:
     """Вернуть до `count` различных URL товаров со стоком."""
     found: list[str] = []
 
-    def _try(url: str):
+    def _try(url: str) -> None:
         url = url.split("?")[0]
         if url not in found and _has_stock(page, url):
             found.append(url)
@@ -129,18 +179,18 @@ def _resolve_in_stock_products(page, count: int) -> list[str]:
         if len(found) >= count:
             return found
 
+    # Кандидаты не дали стока — берём его со страницы категории одним запросом,
+    # а не перебором «зайти в товар → положить в корзину → посмотреть».
     for category in _CATEGORY_FALLBACKS:
         try:
             page.goto(category, wait_until="domcontentloaded", timeout=60_000)
-            page.wait_for_timeout(2_500)
+            slugs = page.evaluate(_CATEGORY_STOCK_JS)
         except Exception:
             continue
-        hrefs = page.eval_on_selector_all(
-            'a[href*="/product/"]',
-            "els => [...new Set(els.map(a => a.getAttribute('href').split('?')[0]))]",
-        )
-        for href in hrefs:
-            _try(href)
+        for slug in slugs:
+            # Подтверждаем на самой карточке: в листинге сток может быть
+            # суммарным по вариантам цвета, а тестам нужен конкретный товар.
+            _try(slug if slug.startswith("/") else f"/ru/product/{slug}")
             if len(found) >= count:
                 return found
 
@@ -169,25 +219,146 @@ def in_stock_product(in_stock_products) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Глобально гасим виджет Bitrix24 — он перехватывает клики по элементам
-# хедера/футера и валит тесты. На каждой загрузке странички инжектим CSS
-# и MutationObserver, который убивает любые [class*="b24-widget"].
+# Динамический подбор товара, доступного в кредит.
+# Кредит включается не для всего каталога: в пейлоаде товара лежит
+# `credit: {has, value, rate, months}`, и при `has: false` вёрстка рендерит
+# `div.actions.product.credit-not-available` вообще БЕЗ кнопки `button.btn__credit`.
+# Проверено на живом stage 2026-07-30: у зашитого раньше в тесты
+# `jbl-partybox-on-the-go-2` (сток 82, цена 6649) `credit.has == false`, поэтому
+# фикстура падала на «element(s) not found» — селектор при этом верный.
+# Отсюда тот же приём, что и со стоком: искать товар по данным, а не хардкодить.
 # ---------------------------------------------------------------------------
-_HIDE_B24_SCRIPT = """
-(() => {
-  const style = document.createElement('style');
-  style.textContent = `[class*="b24-widget"] { display: none !important; visibility: hidden !important; pointer-events: none !important; }`;
-  (document.head || document.documentElement).appendChild(style);
-  const kill = () => document.querySelectorAll('[class*="b24-widget"]').forEach(el => el.remove());
-  kill();
-  new MutationObserver(kill).observe(document.documentElement, { childList: true, subtree: true });
-})();
+_CREDIT_CANDIDATES = [
+    # Подтверждён вручную 2026-08-03 — проверяем первым, чтобы фикстура не
+    # перебирала остальных кандидатов и категории.
+    "/ru/product/jbl-charge-6-purple",
+    "/ru/product/harman-kardon-onyx-studio-9-grey",
+    "/ru/product/harman-kardon-onyx-studio-9-black",
+    "/ru/product/jbl-boombox-4-black",
+]
+_CREDIT_CATEGORY_FALLBACKS = ["/ru/acustica-portabila", "/ru/casti", "/ru/catalog"]
+
+_PDP_CREDIT_JS = "() => window.__NUXT__?.state?.product?.product?.credit?.has === true"
+
+# То же дерево `__NUXT__`, но отбираем по кредиту; сток тоже требуем — без него
+# товар уходит в «Предзаказ» и часть сценариев кредита недоступна.
+_CATEGORY_CREDIT_JS = """
+() => {
+  const seen = new Set();
+  const out = [];
+  const walk = (o) => {
+    if (!o || typeof o !== 'object' || seen.has(o) || out.length > 500) return;
+    seen.add(o);
+    if (!Array.isArray(o) && o.credit && typeof o.credit === 'object' && (o.slug || o.url)) {
+      out.push({ slug: o.slug || o.url, has: o.credit.has === true, stock: o.stock });
+    }
+    for (const k of Object.keys(o)) walk(o[k]);
+  };
+  walk(window.__NUXT__);
+  return [...new Map(out.map(p => [p.slug, p])).values()]
+           .filter(p => p.has && Number(p.stock) > 0)
+           .map(p => p.slug);
+}
 """
 
 
+def _has_credit(page, product_url: str) -> bool:
+    try:
+        page.goto(product_url, wait_until="domcontentloaded", timeout=60_000)
+        return bool(page.evaluate(_PDP_CREDIT_JS))
+    except Exception:
+        return False
+
+
+@pytest.fixture(scope="session")
+def credit_product(browser, base_url) -> str:
+    """URL товара, доступного в кредит (есть `button.btn__credit`)."""
+    ctx = browser.new_context(base_url=base_url, ignore_https_errors=True)
+    page = ctx.new_page()
+    try:
+        for url in _CREDIT_CANDIDATES:
+            if _has_credit(page, url):
+                return url
+
+        for category in _CREDIT_CATEGORY_FALLBACKS:
+            try:
+                page.goto(category, wait_until="domcontentloaded", timeout=60_000)
+                slugs = page.evaluate(_CATEGORY_CREDIT_JS)
+            except Exception:
+                continue
+            for slug in slugs:
+                url = slug if slug.startswith("/") else f"/ru/product/{slug}"
+                if _has_credit(page, url):
+                    return url
+
+        raise RuntimeError(
+            "Не нашли ни одного товара с доступным кредитом "
+            "(credit.has) ни среди кандидатов, ни в категориях"
+        )
+    finally:
+        ctx.close()
+
+
+# ---------------------------------------------------------------------------
+# Глобально гасим оверлеи, которые перехватывают клики и валят тесты.
+# На каждой загрузке странички инжектим CSS и MutationObserver, который убивает
+# такие элементы по мере появления.
+#
+# 1. `[class*="b24-widget"]` — виджет Bitrix24, ловит клики по хедеру/футеру.
+# 2. `.ecom-modal` — промо-попап «До 10% скидки» (`position: fixed`, z-index 100).
+#    Появляется НЕ на каждой загрузке и через какое-то время уходит сам, поэтому
+#    ломает прогон недетерминированно: Playwright пишет
+#    «<div class="ecom-modal__body"> … intercepts pointer events» и клик уходит
+#    в таймаут. Наблюдалось вживую 2026-07-30 на карточке товара и на предзаказе.
+#    Отдельными тестами промо-попап не покрыт — гасим целиком.
+# ---------------------------------------------------------------------------
+_OVERLAY_SELECTORS = '[class*="b24-widget"], .ecom-modal'
+
+_HIDE_OVERLAYS_SCRIPT = """
+(() => {
+  const SEL = '%s';
+  const style = document.createElement('style');
+  style.textContent = SEL + ' { display: none !important; visibility: hidden !important; pointer-events: none !important; }';
+  (document.head || document.documentElement).appendChild(style);
+  const kill = () => document.querySelectorAll(SEL).forEach(el => el.remove());
+  kill();
+  new MutationObserver(kill).observe(document.documentElement, { childList: true, subtree: true });
+})();
+""" % _OVERLAY_SELECTORS
+
+
 @pytest.fixture(autouse=True)
-def _suppress_b24_widget(page):
-    page.add_init_script(_HIDE_B24_SCRIPT)
+def _suppress_overlays(page):
+    page.add_init_script(_HIDE_OVERLAYS_SCRIPT)
+    yield
+
+
+# ---------------------------------------------------------------------------
+# Устойчивость к тормозам stage. Под нагрузкой сервер отвечает медленно, и
+# стандартные таймауты Playwright (действия 30s, expect 5s) дают ложные
+# TimeoutError на стабильных тестах. Поднимаем дефолты — это ТОЛЬКО добавляет
+# запас: проходящий тест остаётся быстрым (поллинг завершается сразу), а
+# медленный ответ сервера успевает дойти, а не падает по таймауту.
+# STAGE_SLOW=1 удваивает запас, когда stage совсем залипает.
+# ---------------------------------------------------------------------------
+_ACTION_TIMEOUT_MS = 45_000
+_NAV_TIMEOUT_MS = 60_000
+_EXPECT_TIMEOUT_MS = 15_000
+
+
+@pytest.fixture(autouse=True)
+def _resilient_timeouts(page):
+    slow = os.getenv("STAGE_SLOW") == "1"
+    mult = 2 if slow else 1
+    page.set_default_timeout(_ACTION_TIMEOUT_MS * mult)
+    page.set_default_navigation_timeout(_NAV_TIMEOUT_MS * mult)
+    try:
+        from playwright.sync_api import expect
+
+        expect.set_options(timeout=_EXPECT_TIMEOUT_MS * mult)
+    except Exception:
+        # На старых версиях expect.set_options может отсутствовать — не критично.
+        pass
     yield
 
 

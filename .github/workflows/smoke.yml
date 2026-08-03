@@ -63,6 +63,7 @@ jobs:
         run: |
           xvfb-run --auto-servernum \
             pytest -m smoke --headed --browser chromium \
+                   --timeout=120 \
                    --tracing=retain-on-failure \
                    --screenshot=only-on-failure \
                    --output=test-results \

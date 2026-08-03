@@ -87,12 +87,12 @@ def test_invalid_credentials_show_error(page: Page):
     # Нажать на кнопку «Войдите в аккаунт»
     modal.get_by_text("Войдите в аккаунт").click()
 
-    # Отображается ошибка авторизации (точный текст не важен —
-    # важно, что появляется сообщение об ошибке логина/пароля).
-    # Продукт показывает «Неверный логин или пароль».
-    error = modal.locator(".validation:visible")
+    # Отображается ошибка авторизации. Серверная ошибка живёт НЕ в `.validation`
+    # (те остаются display:none — это валидация «поле обязательно»), а в
+    # отдельном блоке формы. Продукт показывает «Неверный логин или пароль».
+    error = modal.locator(".modal__authentification__ecom-content-form-error")
     expect(error.first).to_be_visible(timeout=10_000)
-    expect(modal).to_contain_text("пароль", timeout=10_000)
+    expect(error.first).to_contain_text("пароль", timeout=10_000)
 
 
 # ===========================================================================

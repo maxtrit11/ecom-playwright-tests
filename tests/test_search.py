@@ -31,6 +31,10 @@ SEARCH_PAGE_SORT = "[class*='sort'], .sorting"
 SEARCH_PAGE_PRODUCTS = "[class*='product-card'], [class*='card__product'], .product__item"
 SEARCH_PAGE_VIEW_BTNS = "[class*='view'], [class*='display']"
 
+# Контрол сортировки на странице результатов (та же разметка, что в категории)
+SORT_BTN = ".sorting-bar__btn"
+SORT_OPTION = ".sorting-bar__list span"
+
 
 EXISTING_QUERY = "jbl"
 NON_EXISTING_QUERY = "sdfsdds"
@@ -55,6 +59,26 @@ def go_to_search_results_page(page: Page, query: str):
     """Перейти на страницу результатов поиска."""
     page.goto(f"/ru/search?query={query}")
     page.wait_for_load_state("networkidle")
+
+
+PRODUCT_URL_RE = re.compile(r"/product/|/produs/")
+
+
+def _click_until_product_page(page: Page, locator) -> bool:
+    """Кликнуть по ссылке на товар, повторяя, пока не сменится URL.
+
+    Переход внутри SPA: первый клик по ссылке регулярно уходит до того, как Vue
+    навесит обработчик, и страница просто остаётся на месте. Тест падал с
+    «Не перешли на страницу товара: <исходный URL>» на живой рабочей ссылке.
+    """
+    for _ in range(3):
+        locator.click()
+        try:
+            page.wait_for_url(PRODUCT_URL_RE, timeout=10_000)
+            return True
+        except Exception:
+            page.wait_for_timeout(500)
+    return bool(PRODUCT_URL_RE.search(page.url))
 
 
 # ===========================================================================
@@ -135,11 +159,7 @@ def test_click_product_in_dropdown_navigates_to_product_page(page: Page):
     products = page.locator(RESULT_PRODUCT)
     expect(products.first).to_be_visible(timeout=10_000)
 
-    products.first.click()
-    page.wait_for_load_state("networkidle")
-
-    # URL содержит /product/ или /produs/
-    assert re.search(r"/product/|/produs/", page.url), (
+    assert _click_until_product_page(page, products.first), (
         f"Не перешли на страницу товара: {page.url}"
     )
 
@@ -390,17 +410,20 @@ def test_sort_by_price_ascending(page: Page):
     дешевле или равен последнему."""
     go_to_search_results_page(page, EXISTING_QUERY)
 
-    # Ищем и кликаем сортировку
-    sort_block = page.locator("[class*='sort']").first
-    if sort_block.count() == 0 or not sort_block.is_visible():
+    # Контрол сортировки — тот же `.sorting-bar`, что на странице категории
+    # (см. tests/test_sorting.py). Широкий `[class*='sort'].first` брал внешнюю
+    # обёртку `div.catalog__sort`: клик по ней список не открывает, опция
+    # остаётся hidden, и тест падал по таймауту клика (проверено 2026-07-30).
+    sort_btn = page.locator(SORT_BTN).first
+    if sort_btn.count() == 0 or not sort_btn.is_visible():
         pytest.skip("Блок сортировки не найден")
 
-    sort_block.click()
+    sort_btn.click()
     page.wait_for_timeout(300)
 
-    # Ищем опцию «низкой цены»
-    low_price_option = page.locator(
-        "text=/[Нн]изк|[Ll]ow|[Cc]rescător/"
+    # Ищем опцию «низкой цены» внутри раскрытого списка
+    low_price_option = page.locator(SORT_OPTION).filter(
+        has_text=re.compile(r"[Нн]изк|[Ll]ow|[Cc]rescător")
     )
     if low_price_option.count() > 0:
         low_price_option.first.click()
@@ -441,10 +464,7 @@ def test_click_product_card_on_search_page(page: Page):
         product_card = page.locator("a[href*='/product/']")
 
     if product_card.count() > 0:
-        product_card.first.click()
-        page.wait_for_load_state("networkidle")
-
-        assert re.search(r"/product/|/produs/", page.url), (
+        assert _click_until_product_page(page, product_card.first), (
             f"Не перешли на страницу товара: {page.url}"
         )
     else:

@@ -7,8 +7,9 @@ import pytest
 from playwright.sync_api import Page, expect
 
 
-# Эталонный товар для всех тестов
-PRODUCT_URL = "/ru/product/jbl-partybox-on-the-go-2"
+# Товар берём из фикстуры `credit_product` (conftest): кредит доступен не для
+# всего каталога, и зашитый раньше `jbl-partybox-on-the-go-2` его потерял
+# (`credit.has == false` → кнопки `btn__credit` в разметке просто нет).
 
 BTN_OPEN_CREDIT = "button.btn__credit"
 
@@ -23,19 +24,42 @@ COMPANIES = f"{MODAL_CREDIT} .list.company .credit__group"
 SUCCESS_POPUP = ".modal__credit_success.show"
 
 
+def _fill_phone(page: Page, number: str) -> None:
+    """Ввести телефон в intl-tel-input.
+
+    `fill()` подставляет значение одним событием, а маска intl-tel-input
+    навешана на посимвольный ввод — поле остаётся невалидным, и submit
+    ложно падает на валидации. Нужен только `press_sequentially`.
+    """
+    tel = page.locator(INPUT_TEL).first
+    tel.click()
+    tel.press_sequentially(number, delay=60)
+
+
 @pytest.fixture
-def open_credit_popup(page: Page):
+def open_credit_popup(page: Page, credit_product: str):
     """Открыть страницу товара и поп-ап Купить в кредит."""
     # Desktop viewport — на мобильной разметке отдельные обработчики submit
     page.set_viewport_size({"width": 1920, "height": 1080})
-    page.goto(PRODUCT_URL, wait_until="domcontentloaded", timeout=60_000)
+    page.goto(credit_product, wait_until="domcontentloaded", timeout=60_000)
     expect(page.locator("h1")).to_be_visible(timeout=15_000)
 
     credit_btn = page.locator(BTN_OPEN_CREDIT).first
     expect(credit_btn).to_be_visible(timeout=10_000)
-    credit_btn.click()
 
-    expect(page.locator(MODAL_CREDIT)).to_be_visible(timeout=10_000)
+    # Первый клик после гидрации регулярно теряется — кликаем с повтором,
+    # пока модалка не откроется (см. заметку про гидрацию в conftest).
+    modal = page.locator(MODAL_CREDIT)
+    for _ in range(3):
+        credit_btn.click()
+        try:
+            expect(modal).to_be_visible(timeout=5_000)
+            break
+        except AssertionError:
+            continue
+    else:
+        expect(modal).to_be_visible(timeout=5_000)
+
     return page
 
 
@@ -136,7 +160,7 @@ def test_empty_name_shows_error_on_submit(open_credit_popup: Page):
     """Заполнен только телефон → submit → у поля Имя красная рамка / ошибка."""
     page = open_credit_popup
 
-    page.locator(INPUT_TEL).first.fill("79111111")
+    _fill_phone(page, "79111111")
 
     name_input = page.locator(INPUT_NAME).first
     border_before = name_input.evaluate("el => getComputedStyle(el).borderColor")
@@ -205,7 +229,7 @@ def test_successful_credit_application(open_credit_popup: Page):
 
     page.locator(INPUT_NAME).first.fill("Тест Тестов")
     page.wait_for_timeout(500)
-    page.locator(INPUT_TEL).first.fill(unique_phone)
+    _fill_phone(page, unique_phone)
     page.wait_for_timeout(500)
 
     # Ждём что submit-кнопка кликабельна (форма прошла клиентскую валидацию)

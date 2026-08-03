@@ -111,7 +111,18 @@ def test_successful_one_click_purchase(open_one_click_popup: Page):
     # Уникальный 8-значный телефон чтобы обойти антиспам на стейдже
     unique_phone = "79" + str(int(time.time() * 1000))[-6:]
 
-    page.locator(INPUT_TEL).first.fill(unique_phone)
+    # `fill()` ломает маску intl-tel-input: значение остаётся без пробелов,
+    # плагин считает номер невалидным и сабмит молча не проходит — модалка
+    # висит открытой. Нужен посимвольный ввод с фокусом (как в предзаказе).
+    tel = page.locator(INPUT_TEL).first
+    for _ in range(3):
+        tel.click()
+        tel.press_sequentially(unique_phone, delay=60)
+        try:
+            expect(tel).not_to_have_value("", timeout=2_000)
+            break
+        except AssertionError:
+            page.wait_for_timeout(500)
     page.wait_for_timeout(500)
 
     submit_btn = page.locator(BTN_SUBMIT).first

@@ -31,7 +31,7 @@ def click_save_and_wait(page: Page) -> None:
 # Фикстура: логин и переход на страницу «Личные данные»
 # ---------------------------------------------------------------------------
 @pytest.fixture(autouse=True)
-def login_and_open_personal_data(page: Page):
+def login_and_open_personal_data(page: Page, hydrated):
     # `load`/networkidle часто не достигаются на стейдже (фоновые запросы)
     page.goto("/ru", wait_until="domcontentloaded", timeout=60_000)
     page.locator(".btn__action.btn__auth").wait_for(state="visible", timeout=15_000)
@@ -58,6 +58,10 @@ def login_and_open_personal_data(page: Page):
     expect(page.locator(".btn__action.btn__auth")).to_contain_text(
         "Кабинет", timeout=10_000
     )
+
+    # Успешный логин делает полный редирект — шапка гидрируется заново, и клик
+    # по «Кабинет» сразу после логина теряется (пункт «Личные данные» не всплывает).
+    hydrated(page)
 
     # Переход в Личные данные
     page.locator(".btn__action.btn__auth").click()

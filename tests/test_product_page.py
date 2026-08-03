@@ -54,10 +54,25 @@ MODAL_CREDIT = ".modal__credit.show"
 MODAL_ONE_CLICK = ".modal__buy_onclick.show"
 
 
-def _digits(text: str) -> int:
-    """Извлечь число из строки вида '1 199 MDL' → 1199."""
-    digits = re.sub(r"[^\d]", "", text or "")
-    return int(digits) if digits else 0
+# Суммы на стенде дробные и с пробелом-разделителем тысяч: «6 649.05 MDL».
+# Считаем всё в банях (копейках) целыми числами — так сравнение точное и не
+# зависит от округления float.
+#
+# Прежний `_digits` просто вырезал всё, кроме цифр, и превращал «6 649.05 MDL»
+# в 664905, а `_header_cart_sum` регуляркой `(\d[\d\s]*)\s*MDL` цеплялся к
+# хвосту «05 MDL» и возвращал 5. Тесты падали на ассерте `5 == 0 + 664905`, хотя
+# сайт показывал корректную сумму (проверено в браузере 2026-07-30).
+_AMOUNT_RE = re.compile(r"(\d[\d\s ]*(?:[.,]\d{1,2})?)\s*MDL")
+
+
+def _bani(text: str) -> int:
+    """'6 649.05 MDL' → 664905 (бани). Без суммы в MDL — 0."""
+    m = _AMOUNT_RE.search(text or "")
+    if not m:
+        return 0
+    raw = re.sub(r"[\s ]", "", m.group(1)).replace(",", ".")
+    whole, _, frac = raw.partition(".")
+    return int(whole) * 100 + int((frac or "0").ljust(2, "0")[:2])
 
 
 def _header_compare_count(page: Page) -> int:
@@ -74,11 +89,12 @@ def _header_favorite_count(page: Page) -> int:
 
 
 def _header_cart_sum(page: Page) -> int:
-    """Сумма в шапке корзины ('6 999 MDL' → 6999), либо 0 если корзина пустая."""
+    """Сумма в шапке корзины в банях, либо 0 если корзина пустая.
+
+    В пустой корзине кнопка содержит только слово «Корзина» — суммы нет.
+    """
     text = page.locator(HEADER_CART_BTN).first.text_content() or ""
-    # Игнорируем слово «Корзина», берём только MDL-сумму
-    m = re.search(r"(\d[\d\s]*)\s*MDL", text)
-    return _digits(m.group(1)) if m else 0
+    return _bani(text)
 
 
 @pytest.fixture(autouse=True)
@@ -246,15 +262,26 @@ def test_collapse_description(page: Page):
 # ===========================================================================
 # Кейс 80: Открыть поп-ап Купить в кредит
 # ===========================================================================
-def test_open_credit_popup(page: Page):
+def test_open_credit_popup(page: Page, credit_product: str):
     """Клик «В кредит» — открывается поп-ап с полями имя/телефон и компаниями кредитования."""
+    # У эталонного товара страницы `credit.has == false` — кнопки `btn__credit`
+    # в разметке просто нет, и кейс уходил в вечный skip. Товар с доступным
+    # кредитом даёт сессионная фикстура `credit_product` (conftest).
+    page.goto(credit_product, wait_until="domcontentloaded", timeout=60_000)
+    expect(page.locator(H1)).to_be_visible(timeout=15_000)
+
     credit_btn = page.locator(BTN_CREDIT).first
-    if credit_btn.count() == 0:
-        pytest.skip("На сайте отключён функционал кредитов для этого товара")
+    expect(credit_btn).to_be_visible(timeout=10_000)
 
-    credit_btn.click()
-
+    # Первый клик после гидрации регулярно теряется — кликаем с повтором.
     modal = page.locator(MODAL_CREDIT)
+    for _ in range(3):
+        credit_btn.click()
+        try:
+            expect(modal).to_be_visible(timeout=5_000)
+            break
+        except AssertionError:
+            continue
     expect(modal).to_be_visible(timeout=10_000)
 
     # Заголовок «Купить в кредит»
@@ -287,7 +314,7 @@ def test_add_to_cart_updates_header_sum(page: Page):
     sum_before = _header_cart_sum(page)
 
     price_text = page.locator(PRICE_NEW).first.text_content().strip()
-    price = _digits(price_text)
+    price = _bani(price_text)
     assert price > 0, f"Не удалось распарсить цену со страницы: {price_text}"
 
     page.locator(BTN_ADD_CART).first.click()
@@ -422,7 +449,7 @@ def test_quantity_minus_disabled_at_one(page: Page):
 def test_add_to_cart_with_quantity(page: Page):
     """qty=3 → В корзину → в шапке сумма = price × 3."""
     price_text = page.locator(PRICE_NEW).first.text_content().strip()
-    price = _digits(price_text)
+    price = _bani(price_text)
     assert price > 0
 
     plus = page.locator(BTN_QTY_PLUS).first
@@ -469,7 +496,7 @@ def test_add_to_cart_with_quantity(page: Page):
 def test_product_price_matches_cart_header_sum(page: Page):
     """Цена на странице товара равна сумме в шапке после добавления в корзину."""
     price_text = page.locator(PRICE_NEW).first.text_content().strip()
-    price = _digits(price_text)
+    price = _bani(price_text)
     assert price > 0, f"Не удалось распарсить цену со страницы: {price_text}"
 
     sum_before = _header_cart_sum(page)

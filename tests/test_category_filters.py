@@ -30,7 +30,14 @@ CATEGORY_URL = os.environ.get("CATEGORY_URL", "/ro/jbl-tune")
 # ---------------------------------------------------------------------------
 # Селекторы (структурные — не зависят от категории и значений фильтров)
 # ---------------------------------------------------------------------------
-FILTERS_SIDEBAR = ".filters-vertical"
+# Класс `.filters-vertical` переиспользован на странице ДВАЖДЫ: настоящий
+# сайдбар фильтров и блок ссылок на подкатегории
+# (`.filters-vertical filters-vertical--subcategory`). Из-за этого
+# `page.locator(".filters-vertical")` даёт strict mode violation. Отсекаем
+# блок подкатегорий по модификатору, а все внутренние элементы ищем ОТ
+# сайдбара (см. `_sidebar`), а не от страницы: BEM-префикс у обоих блоков
+# один и тот же, поэтому `.first` от страницы может зацепить не тот блок.
+FILTERS_SIDEBAR = ".filters-vertical:not(.filters-vertical--subcategory)"
 FILTER_GROUP = ".filters-vertical__content__params__item"
 GROUP_TITLE = ".filters-vertical__content__params__item__header__title"
 GROUP_CONTENT = ".filters-vertical__content__params__item__content"
@@ -47,9 +54,28 @@ PRODUCT_CARD = ".product__item"
 # ---------------------------------------------------------------------------
 # Хелперы
 # ---------------------------------------------------------------------------
+def _sidebar(page: Page) -> Locator:
+    """Настоящий сайдбар фильтров (не блок ссылок на подкатегории)."""
+    return page.locator(FILTERS_SIDEBAR)
+
+
+def _present(loc: Locator, count: int = 1, timeout: int = 10_000) -> bool:
+    """Дождаться, что элементов `loc` стало >= `count`.
+
+    Голый `.count()` ничего не ждёт, а сайдбар догружает часть параметров уже
+    ПОСЛЕ гидрации. Мгновенная проверка давала ложный skip («на категории нет
+    прайс-фильтра»), из-за которого тест молча не проверял ничего: в изоляции
+    он проходит, а в полном прогоне скипается."""
+    try:
+        loc.nth(count - 1).wait_for(state="attached", timeout=timeout)
+        return True
+    except Exception:
+        return False
+
+
 def _found_count(page: Page) -> int:
     """Прочитать число из «Produse găsite: N» / «Найдено товаров: N»."""
-    text = page.locator(FOUND_GOODS).text_content() or ""
+    text = _sidebar(page).locator(FOUND_GOODS).text_content() or ""
     nums = re.findall(r"\d+", text)
     return int(nums[0]) if nums else -1
 
@@ -57,7 +83,9 @@ def _found_count(page: Page) -> int:
 def _first_group_with_checkboxes(page: Page, min_options: int = 1) -> Locator | None:
     """Возвращает локатор первой группы фильтров с >=`min_options` чекбоксами,
     или None если такой нет."""
-    groups = page.locator(FILTER_GROUP)
+    if not _present(_sidebar(page).locator(CHECKBOX_ITEM), min_options):
+        return None
+    groups = _sidebar(page).locator(FILTER_GROUP)
     for i in range(groups.count()):
         g = groups.nth(i)
         if g.locator(CHECKBOX_ITEM).count() >= min_options:
@@ -79,7 +107,7 @@ def _wait_after_filter(page: Page) -> None:
 def open_category(page: Page):
     page.set_viewport_size({"width": 1920, "height": 1080})
     page.goto(CATEGORY_URL, wait_until="domcontentloaded", timeout=60_000)
-    expect(page.locator(FILTERS_SIDEBAR)).to_be_visible(timeout=20_000)
+    expect(_sidebar(page)).to_be_visible(timeout=20_000)
     expect(page.locator(PRODUCT_CARD).first).to_be_visible(timeout=20_000)
 
 
@@ -88,9 +116,9 @@ def open_category(page: Page):
 # ===========================================================================
 def test_filters_sidebar_renders_with_groups(page: Page):
     """Сайдбар виден, групп фильтров > 0."""
-    expect(page.locator(FILTERS_SIDEBAR)).to_be_visible()
+    expect(_sidebar(page)).to_be_visible()
 
-    groups = page.locator(FILTER_GROUP)
+    groups = _sidebar(page).locator(FILTER_GROUP)
     assert groups.count() > 0, "В сайдбаре не отрисовано ни одной группы фильтров"
 
 
@@ -100,7 +128,7 @@ def test_filters_sidebar_renders_with_groups(page: Page):
 @pytest.mark.smoke
 def test_found_goods_counter_visible(page: Page):
     """Заголовок сайдбара содержит счётчик «Найдено товаров: N» (N > 0)."""
-    counter = page.locator(FOUND_GOODS)
+    counter = _sidebar(page).locator(FOUND_GOODS)
     expect(counter).to_be_visible()
     assert _found_count(page) > 0, "Счётчик равен 0 на дефолтной выдаче"
 
@@ -175,8 +203,8 @@ def test_uncheck_returns_counter_to_initial(page: Page):
 # ===========================================================================
 def test_in_stock_toggle_filters_results(page: Page):
     """Тоггл «В наличии» обновляет выдачу (счётчик меняется или не растёт)."""
-    toggle = page.locator(IN_STOCK_TOGGLE)
-    if toggle.count() == 0:
+    toggle = _sidebar(page).locator(IN_STOCK_TOGGLE)
+    if not _present(toggle):
         pytest.skip("На этой категории нет тоггла «В наличии»")
 
     count_before = _found_count(page)
@@ -217,7 +245,7 @@ def test_filter_persists_on_reload(page: Page):
                 page.wait_for_timeout(1500)
                 continue
             raise
-    expect(page.locator(FILTERS_SIDEBAR)).to_be_visible(timeout=20_000)
+    expect(_sidebar(page)).to_be_visible(timeout=20_000)
     _wait_after_filter(page)
 
     assert "filters=" in page.url, (
@@ -251,20 +279,37 @@ def test_multiple_filters_narrow_results(page: Page):
     _wait_after_filter(page)
     count_one = _found_count(page)
 
-    # Ищем вторую опцию, которая осталась активной (input не disabled)
-    # и отличается от первой — клик по ней реально применим.
+    # Ищем вторую опцию, которая осталась активной (input не disabled),
+    # отличается от первой И ЛЕЖИТ В ДРУГОЙ ГРУППЕ.
+    #
+    # Группа обязательна: подтверждено в браузере 2026-07-30 на /ro/jbl-tune —
+    # опции ОДНОЙ группы уходят в URL одним ключом через запятую
+    # (`filters=38:175,219`) и комбинируются по OR, поэтому выдача законно
+    # РАСТЁТ (1 → 4). Разные группы дают отдельные ключи
+    # (`filters=38:175,74:224`) и комбинируются по AND — сужают (1 → 1).
+    # Без фильтра по группе тест падал на корректном поведении сайта.
     second_id = page.evaluate(
         """(firstId) => {
-            const inputs = [...document.querySelectorAll(
-              '.filters-vertical__content__params__item__content__checkboxes__item input'
+            const GROUP = '.filters-vertical__content__params__item';
+            const root = document.querySelector(
+              '.filters-vertical:not(.filters-vertical--subcategory)'
+            );
+            if (!root) return null;
+            const first = document.querySelector('[id="' + firstId + '"]');
+            const firstGroup = first && first.closest(GROUP);
+            const inputs = [...root.querySelectorAll(
+              GROUP + '__content__checkboxes__item input'
             )];
-            const ok = inputs.find(i => !i.disabled && i.id && i.id !== firstId);
+            const ok = inputs.find(i => !i.disabled && i.id && i.id !== firstId
+                && (!firstGroup || !firstGroup.contains(i)));
             return ok ? ok.id : null;
         }""",
         first_id,
     )
     if not second_id:
-        pytest.skip("После первого фильтра не осталось активных опций для второго")
+        pytest.skip(
+            "После первого фильтра не осталось активных опций в другой группе"
+        )
 
     page.locator(f'label[for="{second_id}"]').first.click()
     _wait_after_filter(page)
@@ -280,8 +325,8 @@ def test_multiple_filters_narrow_results(page: Page):
 # ===========================================================================
 def test_price_filter_narrows_results(page: Page):
     """В прайс-блоке уменьшить значение max — счётчик не вырос."""
-    inputs = page.locator(PRICE_INPUTS)
-    if inputs.count() < 2:
+    inputs = _sidebar(page).locator(PRICE_INPUTS)
+    if not _present(inputs, 2):
         pytest.skip("На этой категории нет полей ценового фильтра")
 
     count_before = _found_count(page)

@@ -81,11 +81,16 @@ jobs:
       # --reruns 1 (override pytest.ini, где 2): на флакающем стейдже двойной
       # ретрай ×120s раздувает бюджет; одиночного ретрая хватает погасить флак,
       # а суммарное время прогона падает ~на треть.
+      # --timeout=120 задаётся ЗДЕСЬ, а не в pytest.ini: на Windows (локальные
+      # прогоны) pytest-timeout умеет только метод thread, который убивает весь
+      # процесс pytest вместо одного теста — прогон обрывается без отчёта.
+      # В CI (Linux) выбирается метод signal, где потолок работает как задумано.
       - name: Run E2E tests (headed via Xvfb)
         run: |
           xvfb-run --auto-servernum \
             pytest --headed --browser chromium \
                    --reruns 1 \
+                   --timeout=120 \
                    --session-timeout=5400 \
                    --screenshot=only-on-failure \
                    --output=test-results \
