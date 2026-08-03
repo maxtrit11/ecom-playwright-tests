@@ -41,6 +41,7 @@ ERT-*.json
 *.png
 landing-page/
 ecom_obr_front/
+casmara-med/
 qase_structure.txt
 suite*_cases.txt
 credit_cases.txt
