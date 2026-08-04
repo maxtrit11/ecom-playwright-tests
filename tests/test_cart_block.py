@@ -22,9 +22,10 @@
 """
 
 import re
+from typing import Callable
 
 import pytest
-from playwright.sync_api import Page, expect
+from playwright.sync_api import Locator, Page, expect
 
 
 # Товар(ы) выбираются динамически фикстурой `in_stock_products` (conftest.py):
@@ -84,6 +85,60 @@ def _hide_b24_widget(page: Page):
     )
 
 
+def _click_until(
+    page: Page,
+    button: Locator,
+    done: Callable[[], bool],
+    attempts: int = 3,
+    timeout_ms: int = 5_000,
+    **click_kwargs,
+) -> None:
+    """Кликнуть и дождаться фактического изменения корзины, повторив клик.
+
+    Виджет корзины перерисовывается при открытии дровера и после каждой
+    операции, и первый клик по свежеотрисованной кнопке регулярно теряется:
+    обработчик ещё не навешен, DOM не меняется вообще. В CI 2026-08-04 это
+    дало «Количество не увеличилось на 1: 1 → 1» и «Карточек не стало меньше
+    на 1: 2 → 2», тогда как вручную кнопки работают.
+
+    Фиксированной паузой это не лечится: замер в браузере показал, что
+    значение обновляется за ~75 мс, то есть прежних 600 мс хватало с запасом
+    — терялся сам клик. Поэтому ждём результат по факту (`done()`) и только
+    затем повторяем: медленный, но успешный клик мы не продублируем (иначе
+    получили бы количество 3 вместо 2), а потерянный — повторим.
+
+    Перед каждым кликом ждём, пока с кнопки снимут `disabled`: количество в
+    поле обновляется раньше, чем Vue пересчитывает состояние контролов, а
+    `disabled`-кнопка не принимает клик — его перехватывает `.items__counter`,
+    и `click()` висит до таймаута в 45 с. Прежняя фиксированная пауза в 600 мс
+    это прикрывала случайно.
+
+    Исключение не бросаем: падать должен ассерт теста со своим сообщением.
+    """
+    for attempt in range(attempts):
+        try:
+            expect(button).not_to_have_class(
+                re.compile(r"\bdisabled\b"), timeout=5_000
+            )
+        except AssertionError:
+            pass  # не дождались — пробуем кликнуть, ассерт теста рассудит
+
+        try:
+            button.click(timeout=10_000, **click_kwargs)
+        except Exception:
+            if attempt == attempts - 1:
+                raise
+            page.wait_for_timeout(300)
+            continue
+
+        waited = 0
+        while waited < timeout_ms:
+            if done():
+                return
+            page.wait_for_timeout(100)
+            waited += 100
+
+
 def _open_cart_drawer(page: Page):
     """Открыть дровер корзины и дождаться появления `.show`."""
     _hide_b24_widget(page)
@@ -117,11 +172,17 @@ def cart_with_product(page: Page, in_stock_product: str):
     # открываем корзину и чистим её через UI.
     _open_cart_drawer(page)
     if page.locator(CART_PRODUCT).count() > 0:
-        page.locator(BTN_CLEAR_ALL).first.click()
-        page.wait_for_timeout(800)
+        _click_until(
+            page,
+            page.locator(BTN_CLEAR_ALL).first,
+            lambda: page.locator(CART_PRODUCT).count() == 0,
+        )
         # Закрываем после очистки, чтобы вернуться на PDP
-        page.locator(BTN_CLOSE).click()
-        page.wait_for_timeout(500)
+        _click_until(
+            page,
+            page.locator(BTN_CLOSE),
+            lambda: page.locator(CART_MODAL_SHOWN).count() == 0,
+        )
 
     _add_one_product_to_cart(page, in_stock_product)
     _open_cart_drawer(page)
@@ -135,8 +196,11 @@ def cart_with_product(page: Page, in_stock_product: str):
 def test_close_cart_via_x_button(cart_with_product: Page):
     page = cart_with_product
 
-    page.locator(BTN_CLOSE).click()
-    page.wait_for_timeout(500)
+    _click_until(
+        page,
+        page.locator(BTN_CLOSE),
+        lambda: page.locator(CART_MODAL_SHOWN).count() == 0,
+    )
 
     # Класса `show` больше нет → модал скрыт
     expect(page.locator(CART_MODAL_SHOWN)).to_have_count(0, timeout=5_000)
@@ -152,8 +216,12 @@ def test_close_cart_by_clicking_outside(cart_with_product: Page):
 
     # Кликаем по `.modal__cart`, но мимо сайдбара (в левом верхнем углу
     # лежит overlay-область модала).
-    page.locator(CART_MODAL_SHOWN).click(position={"x": 50, "y": 50})
-    page.wait_for_timeout(500)
+    _click_until(
+        page,
+        page.locator(CART_MODAL_SHOWN),
+        lambda: page.locator(CART_MODAL_SHOWN).count() == 0,
+        position={"x": 50, "y": 50},
+    )
 
     expect(page.locator(CART_MODAL_SHOWN)).to_have_count(0, timeout=5_000)
 
@@ -179,8 +247,11 @@ def test_delete_one_product_from_cart(cart_with_product: Page, in_stock_products
     count_before = page.locator(CART_PRODUCT).count()
     assert count_before >= 2, f"Ожидалось ≥2 товара, фактически {count_before}"
 
-    page.locator(BTN_DELETE_ONE).first.click()
-    page.wait_for_timeout(800)
+    _click_until(
+        page,
+        page.locator(BTN_DELETE_ONE).first,
+        lambda: page.locator(CART_PRODUCT).count() == count_before - 1,
+    )
 
     count_after = page.locator(CART_PRODUCT).count()
     assert count_after == count_before - 1, (
@@ -197,8 +268,12 @@ def test_empty_stub_when_removing_last_product(cart_with_product: Page):
     # В фикстуре уже ровно 1 товар.
     assert page.locator(CART_PRODUCT).count() == 1
 
-    page.locator(BTN_DELETE_ONE).first.click()
-    page.wait_for_timeout(800)
+    # Тот же потерянный первый клик, что и в кейсе 107 — кликаем с проверкой.
+    _click_until(
+        page,
+        page.locator(BTN_DELETE_ONE).first,
+        lambda: page.locator(CART_PRODUCT).count() == 0,
+    )
 
     expect(page.locator(CART_PRODUCT)).to_have_count(0)
     expect(page.locator(EMPTY_STUB)).to_be_visible(timeout=5_000)
@@ -218,8 +293,11 @@ def test_increase_quantity_plus(cart_with_product: Page):
     expect(minus).to_have_class(re.compile(r"\bdisabled\b"))
 
     qty_before = _quantity_of_first_item(page)
-    page.locator(BTN_PLUS).first.click()
-    page.wait_for_timeout(600)
+    _click_until(
+        page,
+        page.locator(BTN_PLUS).first,
+        lambda: _quantity_of_first_item(page) == qty_before + 1,
+    )
 
     qty_after = _quantity_of_first_item(page)
     assert qty_after == qty_before + 1, (
@@ -239,13 +317,19 @@ def test_decrease_quantity_minus(cart_with_product: Page):
     page = cart_with_product
 
     # Сначала доводим количество до 2
-    page.locator(BTN_PLUS).first.click()
-    page.wait_for_timeout(600)
+    _click_until(
+        page,
+        page.locator(BTN_PLUS).first,
+        lambda: _quantity_of_first_item(page) == 2,
+    )
     assert _quantity_of_first_item(page) == 2
 
     qty_before = _quantity_of_first_item(page)
-    page.locator(BTN_MINUS).first.click()
-    page.wait_for_timeout(600)
+    _click_until(
+        page,
+        page.locator(BTN_MINUS).first,
+        lambda: _quantity_of_first_item(page) == qty_before - 1,
+    )
 
     qty_after = _quantity_of_first_item(page)
     assert qty_after == qty_before - 1, (
@@ -264,8 +348,11 @@ def test_decrease_quantity_minus(cart_with_product: Page):
 def test_open_checkout_via_submit_button(cart_with_product: Page):
     page = cart_with_product
 
-    page.locator(BTN_SUBMIT_REQUEST).first.click()
-    page.wait_for_timeout(800)
+    _click_until(
+        page,
+        page.locator(BTN_SUBMIT_REQUEST).first,
+        lambda: page.locator(CHECKOUT_FORM).count() > 0,
+    )
 
     # Блок оформления заказа отрендерился в том же модале
     expect(page.locator(CHECKOUT_FORM)).to_be_visible(timeout=10_000)
@@ -285,8 +372,9 @@ def test_close_cart_via_continue_shopping(cart_with_product: Page):
         .first
     )
     expect(cont_btn).to_be_visible()
-    cont_btn.click()
-    page.wait_for_timeout(500)
+    _click_until(
+        page, cont_btn, lambda: page.locator(CART_MODAL_SHOWN).count() == 0
+    )
 
     expect(page.locator(CART_MODAL_SHOWN)).to_have_count(0, timeout=5_000)
 
@@ -302,8 +390,7 @@ def test_clear_cart_via_clear_button(cart_with_product: Page):
     clear_btn = page.locator(BTN_CLEAR_ALL).first
     expect(clear_btn).to_be_visible()
     expect(clear_btn).to_contain_text(re.compile(r"Очистить.*корзин", re.IGNORECASE))
-    clear_btn.click()
-    page.wait_for_timeout(800)
+    _click_until(page, clear_btn, lambda: page.locator(CART_PRODUCT).count() == 0)
 
     expect(page.locator(CART_PRODUCT)).to_have_count(0, timeout=10_000)
 

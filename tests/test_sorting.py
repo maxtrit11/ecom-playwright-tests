@@ -111,20 +111,71 @@ def _open_sort_dropdown(page: Page) -> None:
             page.wait_for_timeout(500)
 
 
+def _grid_signature(page: Page) -> str:
+    """Слепок текущей выдачи — названия карточек в порядке отрисовки."""
+    return page.evaluate(
+        """() => [...document.querySelectorAll(
+                '.product__items .product__item .product__name')]
+            .map(n => n.textContent.trim()).join('|')"""
+    )
+
+
+def _wait_grid_changed(page: Page, before: str, timeout: int = 15_000) -> None:
+    """Дождаться, пока грид реально перерисуется новой выдачей.
+
+    `sort=` появляется в URL мгновенно (pushState), а Vue перерисовывает
+    карточки заметно позже ответа бэкенда. Ожидания «URL + networkidle +
+    пауза» не хватало: тест читал ещё дефолтный порядок и сравнивал выдачи
+    из разных моментов времени. В CI 2026-08-04 это дало сразу три падения
+    («порядок товаров не изменился», цены пришли в дефолтном порядке
+    2799/2799/2799/1799/…, «после reload первый товар не совпал»), тогда как
+    в браузере сортировка отрабатывает корректно.
+
+    Ждём выдачу, которая одновременно (а) отличается от прежней и (б) не
+    меняется два опроса подряд. Ловить «любое отличие» недостаточно: Vue
+    перерисовывает грид в несколько заходов, и промежуточный кадр уже не
+    равен исходному, хотя порядок в нём ещё старый. Именно на этом тест
+    «выбор сортировки меняет порядок» падал в общем прогоне, проходя
+    при этом в одиночку.
+
+    Таймаут не бросает исключение: падать должен ассерт теста со своим
+    сообщением, иначе теряем диагностику.
+    """
+    try:
+        page.wait_for_function(
+            """(prev) => {
+                const cur = [...document.querySelectorAll(
+                        '.product__items .product__item .product__name')]
+                    .map(n => n.textContent.trim()).join('|');
+                if (!cur || cur === prev) { window.__sortSig = null; return false; }
+                if (window.__sortSig === cur) return true;   // стабилен 2 опроса
+                window.__sortSig = cur;
+                return false;
+            }""",
+            arg=before,
+            timeout=timeout,
+            polling=250,
+        )
+    except Exception:
+        pass
+
+
 def _pick_sort(page: Page, label: str) -> None:
     """Открыть дропдаун сортировки и выбрать опцию по подписи.
 
     Дропдаун закрывается после выбора, поэтому каждый раз открываем заново.
     Ждём появления/смены sort= в URL (переход идёт через pushState — не
-    через навигацию) и пересчёта выдачи."""
+    через навигацию) и фактической перерисовки выдачи."""
+    before = _grid_signature(page)
+    page.evaluate("() => { window.__sortSig = null; }")
     _open_sort_dropdown(page)
     page.wait_for_timeout(400)
     _sort_option(page, label).first.click()
     page.wait_for_function(
         "() => location.search.includes('sort=')", timeout=10_000
     )
+    _wait_grid_changed(page, before)
     page.wait_for_load_state("networkidle", timeout=15_000)
-    page.wait_for_timeout(800)
 
 
 # ---------------------------------------------------------------------------
