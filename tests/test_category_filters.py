@@ -100,6 +100,55 @@ def _wait_after_filter(page: Page) -> None:
     page.wait_for_timeout(500)
 
 
+# JS-чтение счётчика «найдено»: тот же селектор, что и у `_found_count`.
+_FOUND_JS = """
+    () => {
+        const el = document.querySelector(
+            '.filters-vertical:not(.filters-vertical--subcategory) '
+            + '.filters-vertical__header__found-goods');
+        const m = el && (el.textContent || '').match(/\\d+/);
+        return m ? parseInt(m[0]) : null;
+    }
+"""
+
+
+def _wait_found_count(page: Page, expected: int, timeout: int = 15_000) -> int:
+    """Дождаться, пока счётчик «найдено» покажет `expected`, и вернуть его.
+
+    `_wait_after_filter` (networkidle + пауза) НЕ гарантирует актуального
+    числа: Vue пересчитывает счётчик заметно позже ответа сети — вживую
+    31 → 21 занимает около 3 с. Из-за этого тест читал значение от
+    ПРЕДЫДУЩЕГО состояния фильтров и падал на ночном прогоне
+    («счётчик не вернулся: 31 → 1»), а локально проходил с ретрая.
+
+    Таймаут не бросает исключение: возвращаем то, что реально в DOM, —
+    падать должен ассерт теста со своим сообщением, а не хелпер."""
+    try:
+        page.wait_for_function(
+            f"(expected) => ({_FOUND_JS})() === expected",
+            arg=expected,
+            timeout=timeout,
+        )
+    except Exception:
+        pass
+    return _found_count(page)
+
+
+def _wait_found_count_changed(page: Page, before: int,
+                              timeout: int = 15_000) -> int:
+    """Дождаться, пока счётчик «найдено» станет отличным от `before`."""
+    try:
+        page.wait_for_function(
+            f"(before) => {{ const v = ({_FOUND_JS})();"
+            f" return v !== null && v !== before; }}",
+            arg=before,
+            timeout=timeout,
+        )
+    except Exception:
+        pass
+    return _found_count(page)
+
+
 # ---------------------------------------------------------------------------
 # Фикстура: открыть категорию
 # ---------------------------------------------------------------------------
@@ -183,6 +232,8 @@ def test_uncheck_returns_counter_to_initial(page: Page):
         "() => location.search.includes('filters=')", timeout=10_000
     )
     _wait_after_filter(page)
+    # Ждём, пока счётчик реально отразит фильтр, а не покажет прежнее число
+    _wait_found_count_changed(page, initial_count)
     page.wait_for_timeout(800)  # дать Vue время устаканить state
 
     # Снимаем тот же чекбокс — ищем по стабильному id
@@ -192,7 +243,7 @@ def test_uncheck_returns_counter_to_initial(page: Page):
     )
     _wait_after_filter(page)
 
-    after_count = _found_count(page)
+    after_count = _wait_found_count(page, initial_count)
     assert after_count == initial_count, (
         f"После снятия фильтра счётчик не вернулся: {initial_count} → {after_count}"
     )
@@ -230,10 +281,13 @@ def test_filter_persists_on_reload(page: Page):
     if group is None:
         pytest.skip("На этой категории нет чекбокс-фильтров")
 
+    initial_count = _found_count(page)
     group.locator(CHECKBOX_LABEL).first.click()
     page.wait_for_url(re.compile(r"filters="), timeout=10_000)
     _wait_after_filter(page)
-    count_with_filter = _found_count(page)
+    # Без этого ожидания читалось число ДО фильтра (31), а после reload
+    # приходило настоящее (1) — тест падал на ровном месте.
+    count_with_filter = _wait_found_count_changed(page, initial_count)
 
     # Стейдж иногда отвечает 504 первой попытке — даём один ретрай
     for attempt in range(2):
@@ -251,7 +305,7 @@ def test_filter_persists_on_reload(page: Page):
     assert "filters=" in page.url, (
         f"После reload параметр filters потерян: {page.url}"
     )
-    assert _found_count(page) == count_with_filter, (
+    assert _wait_found_count(page, count_with_filter) == count_with_filter, (
         "После reload счётчик не совпадает с тем, что был до перезагрузки"
     )
 

@@ -154,6 +154,60 @@ def _wait_after_filter(page: Page) -> None:
     page.wait_for_timeout(500)
 
 
+_FOUND_JS = """
+    () => {
+        const el = document.querySelector(
+            '.filters-vertical:not(.filters-vertical--subcategory) '
+            + '.filters-vertical__header__found-goods');
+        const m = el && (el.textContent || '').match(/\\d+/);
+        return m ? parseInt(m[0]) : null;
+    }
+"""
+
+
+def _wait_found_count_changed(page: Page, before: int,
+                              timeout: int = 15_000) -> int:
+    """Дождаться, пока счётчик «найдено» станет отличным от `before`.
+
+    Счётчик пересчитывается заметно позже ответа сети (вживую 31 → 21 через
+    ~3 с), поэтому `_wait_after_filter` возвращает управление, когда в DOM
+    ещё висит выдача от прежнего набора фильтров."""
+    try:
+        page.wait_for_function(
+            f"(before) => {{ const v = ({_FOUND_JS})();"
+            f" return v !== null && v !== before; }}",
+            arg=before,
+            timeout=timeout,
+        )
+    except Exception:
+        pass
+    return _found_count(page)
+
+
+def _wait_last_page(page: Page, expected: int, timeout: int = 15_000) -> int:
+    """Дождаться, пока пагинация перерисуется под `expected` страниц.
+
+    Пагинация отстаёт от клика по фильтру так же, как и счётчик: ночной
+    прогон падал с «число страниц не восстановилось: 3 → 1», потому что
+    читал разметку от ещё отфильтрованной выдачи. Таймаут не бросаем —
+    пусть падает ассерт теста со своим сообщением."""
+    try:
+        page.wait_for_function(
+            """(expected) => {
+                const nums = [...document.querySelectorAll('.pagination__button')]
+                    .map(b => parseInt((b.textContent || '').trim()))
+                    .filter(n => !isNaN(n));
+                const last = nums.length ? Math.max(...nums) : 1;
+                return last === expected;
+            }""",
+            arg=expected,
+            timeout=timeout,
+        )
+    except Exception:
+        pass
+    return _last_page_number(page)
+
+
 def _go_to_page(page: Page, action, target: int) -> None:
     before_key = _first_card_key(page)
     action()
@@ -368,6 +422,7 @@ def test_removing_filter_restores_pagination(page: Page):
     """Применить → снять фильтр: число страниц возвращается к исходному."""
     label = _require_filters_and_pages(page)
 
+    count_before = _found_count(page)
     pages_before = _last_page_number(page)
     label_id = label.get_attribute("for")
     assert label_id, "У чекбокса нет for-атрибута для повторного клика"
@@ -378,6 +433,7 @@ def test_removing_filter_restores_pagination(page: Page):
         "() => location.search.includes('filters=')", timeout=10_000
     )
     _wait_after_filter(page)
+    _wait_found_count_changed(page, count_before)
     page.wait_for_timeout(800)
 
     # Снять тот же чекбокс по стабильному id
@@ -387,7 +443,7 @@ def test_removing_filter_restores_pagination(page: Page):
     )
     _wait_after_filter(page)
 
-    pages_after = _last_page_number(page)
+    pages_after = _wait_last_page(page, pages_before)
     assert pages_after == pages_before, (
         f"После снятия фильтра число страниц не восстановилось: "
         f"{pages_before} → {pages_after}"
