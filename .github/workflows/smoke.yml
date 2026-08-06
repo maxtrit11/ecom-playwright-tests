@@ -11,6 +11,8 @@ on:
     paths:
       - "tests/**"
       - "conftest.py"
+      - "reporting.py"
+      - "assets/report.css"
       - "pytest.ini"
       - "requirements.txt"
       - ".github/workflows/smoke.yml"
@@ -67,7 +69,8 @@ jobs:
                    --tracing=retain-on-failure \
                    --screenshot=only-on-failure \
                    --output=test-results \
-                   --html=smoke-report.html --self-contained-html
+                   --html=smoke-report.html --self-contained-html \
+                   --css=assets/report.css
 
       - name: Upload smoke report
         if: always()

@@ -1,0 +1,311 @@
+/* Тема HTML-отчёта (подключается флагом --css=assets/report.css).
+ *
+ * Грузится ПОСЛЕ штатной style.css из pytest-html, поэтому здесь только
+ * переопределения. Разметку отчёта pytest-html рисует на JS из data-jsonblob,
+ * так что цепляемся к итоговым классам: #results-table, .col-result,
+ * tbody.passed/.failed/.skipped/.error.
+ *
+ * Правки только косметические: если pytest-html сменит вёрстку, отчёт
+ * останется читаемым — просто без темы. */
+
+:root {
+  --r-bg: #f4f6f8;
+  --r-card: #ffffff;
+  --r-text: #1b1f24;
+  --r-muted: #6b7280;
+  --r-border: #e3e7ec;
+  --r-accent: #3b5bdb;
+  --r-pass: #0f7b57;
+  --r-pass-bg: #e7f6ef;
+  --r-fail: #c02b1d;
+  --r-fail-bg: #fdecea;
+  --r-skip: #8a6116;
+  --r-skip-bg: #fdf4e3;
+  --r-code-bg: #1e2430;
+  --r-code-text: #e6edf3;
+  --r-radius: 10px;
+  --r-shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 4px 16px rgba(16, 24, 40, .06);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --r-bg: #14171c;
+    --r-card: #1b1f26;
+    --r-text: #e6e9ef;
+    --r-muted: #9aa4b2;
+    --r-border: #2b313b;
+    --r-accent: #7c93f5;
+    --r-pass: #4ade80;
+    --r-pass-bg: #16281f;
+    --r-fail: #f87171;
+    --r-fail-bg: #2c1a1a;
+    --r-skip: #fbbf24;
+    --r-skip-bg: #2b2413;
+    --r-code-bg: #10141b;
+    --r-shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 4px 16px rgba(0, 0, 0, .3);
+  }
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--r-text);
+  background: var(--r-bg);
+  margin: 0 auto;
+  padding: 32px 28px 64px;
+  max-width: 1500px;
+}
+
+h1#title {
+  font-size: 26px;
+  font-weight: 650;
+  letter-spacing: -.01em;
+  margin: 0 0 4px;
+  color: var(--r-text);
+}
+
+body > p {
+  color: var(--r-muted);
+  font-size: 12.5px;
+  margin: 0 0 24px;
+}
+
+a { color: var(--r-accent); }
+
+/* --- Шапка «Environment» ------------------------------------------------ */
+#environment-header h2,
+.summary h2 {
+  font-size: 12px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--r-muted);
+  margin: 0 0 10px;
+}
+
+table#environment {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  background: var(--r-card);
+  border: 1px solid var(--r-border);
+  border-radius: var(--r-radius);
+  box-shadow: var(--r-shadow);
+  overflow: hidden;
+  margin-bottom: 28px;
+}
+
+table#environment td {
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--r-border);
+  background: transparent;
+  color: var(--r-text);
+}
+
+table#environment tr:last-child td { border-bottom: 0; }
+
+table#environment td:first-child {
+  width: 190px;
+  color: var(--r-muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+table#environment td:last-child {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  word-break: break-all;
+}
+
+/* --- Сводка и фильтры --------------------------------------------------- */
+.summary {
+  background: var(--r-card);
+  border: 1px solid var(--r-border);
+  border-radius: var(--r-radius);
+  box-shadow: var(--r-shadow);
+  padding: 18px 20px;
+  margin-bottom: 22px;
+}
+
+/* Наша строка счётчиков (hook pytest_html_results_summary) */
+.qa-stats { margin: 0 0 14px; }
+
+.qa-stats__total {
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: -.01em;
+  margin-bottom: 8px;
+}
+
+.qa-stats__chips { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.qa-chip {
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  background: rgba(127, 127, 127, .12);
+  color: var(--r-muted);
+}
+
+.qa-chip--passed { color: var(--r-pass); background: var(--r-pass-bg); }
+.qa-chip--failed, .qa-chip--error { color: var(--r-fail); background: var(--r-fail-bg); }
+.qa-chip--skipped, .qa-chip--flaky { color: var(--r-skip); background: var(--r-skip-bg); }
+
+/* Штатный счётчик считает попытки, а не тесты — прячем, чтобы не спорил с нашим */
+.summary .run-count { display: none; }
+
+.summary .filter { color: var(--r-muted); font-size: 12.5px; }
+
+.controls .filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 4px;
+  margin-top: 6px;
+}
+
+.filters span {
+  font-weight: 600;
+  padding: 3px 10px 3px 6px;
+  border-radius: 999px;
+  margin-right: 8px;
+}
+
+.filters span.passed { color: var(--r-pass); background: var(--r-pass-bg); }
+.filters span.failed, .filters span.error { color: var(--r-fail); background: var(--r-fail-bg); }
+.filters span.skipped, .filters span.xfailed, .filters span.xpassed, .filters span.rerun {
+  color: var(--r-skip);
+  background: var(--r-skip-bg);
+}
+
+/* --- Таблица результатов ------------------------------------------------ */
+table#results-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  background: var(--r-card);
+  border: 1px solid var(--r-border);
+  border-radius: var(--r-radius);
+  box-shadow: var(--r-shadow);
+  overflow: hidden;
+  font-size: 13.5px;
+}
+
+#results-table-head th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--r-card);
+  border-bottom: 1px solid var(--r-border);
+  text-align: left;
+  padding: 11px 14px;
+  font-size: 11.5px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--r-muted);
+  white-space: nowrap;
+}
+
+#results-table-head th.sortable { cursor: pointer; }
+#results-table-head th.sortable:hover { color: var(--r-accent); }
+
+#results-table td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--r-border);
+  vertical-align: top;
+  background: transparent;
+}
+
+#results-table tbody:hover td { background: rgba(59, 91, 219, .04); }
+
+/* Статус — плашка, а не голый текст */
+.col-result {
+  font-weight: 650;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+tbody.passed .col-result { color: var(--r-pass); }
+tbody.failed .col-result, tbody.error .col-result { color: var(--r-fail); }
+tbody.skipped .col-result, tbody.xfailed .col-result,
+tbody.xpassed .col-result, tbody.rerun .col-result { color: var(--r-skip); }
+
+/* Цветная полоска слева — упавшее видно при быстрой прокрутке */
+tbody.failed td:first-child, tbody.error td:first-child { box-shadow: inset 3px 0 0 var(--r-fail); }
+tbody.skipped td:first-child, tbody.rerun td:first-child { box-shadow: inset 3px 0 0 var(--r-skip); }
+tbody.passed td:first-child { box-shadow: inset 3px 0 0 var(--r-pass); }
+
+/* Кейс — главная колонка, её и читают */
+.col-case {
+  font-weight: 600;
+  min-width: 320px;
+}
+
+.col-suite {
+  color: var(--r-muted);
+  white-space: nowrap;
+}
+
+.col-testId {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--r-muted);
+  word-break: break-all;
+}
+
+.col-duration {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--r-muted);
+  white-space: nowrap;
+}
+
+/* --- Раскрытая строка: лог и скриншоты ----------------------------------
+ * Штатная обёртка лога режет содержимое на 230px и показывает кнопку
+ * «expand [+]», из-за чего под коротким трейсбеком висела серая пустота.
+ * Отдаём прокрутку самому логу, а обёртку делаем прозрачной по высоте. */
+.logwrapper {
+  max-height: none;
+  overflow: visible;
+  background: transparent;
+  border: 0;
+}
+
+.logwrapper .logexpander { display: none; }
+
+/* Штатное правило `.logwrapper .log` сдвигает лог на -50px под кнопку «expand»
+   (её мы убрали): без сброса блок наезжал на строку с результатом теста.
+   Селектор длиннее штатного намеренно — иначе не перебивает. */
+.extras-row .logwrapper .log {
+  position: static;
+  top: auto;
+}
+
+.log {
+  background: var(--r-code-bg);
+  color: var(--r-code-text);
+  border: 0;
+  border-radius: 8px;
+  padding: 14px 16px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  max-height: 420px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.extras-row > td { background: rgba(127, 127, 127, .05); padding: 4px 14px 14px; }
+
+.media img,
+.media-container__viewport img {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--r-border);
+  border-radius: 8px;
+}
+
+.media__name, .media__counter { color: var(--r-muted); font-size: 12px; }

@@ -105,7 +105,8 @@ jobs:
                    --session-timeout=5400 \
                    --screenshot=only-on-failure \
                    --output=test-results \
-                   --html=report.html --self-contained-html
+                   --html=report.html --self-contained-html \
+                   --css=assets/report.css
 
       # Единственный артефакт — self-contained report.html (пасс/фейл-таблица
       # + вшитые скриншоты фейлов). test-results/ отдельно не грузим: трейсов
