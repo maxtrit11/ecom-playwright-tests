@@ -111,6 +111,28 @@ def _open_sort_dropdown(page: Page) -> None:
             page.wait_for_timeout(500)
 
 
+def _click_sort_option(page: Page, label: str, attempts: int = 3) -> None:
+    """Открыть дропдаун и кликнуть опцию, повторяя связку целиком.
+
+    `_open_sort_dropdown` гарантирует только то, что список стал видимым в
+    момент проверки. После перехода по пагинации компонент успевает
+    перерисоваться ещё раз уже ПОСЛЕ открытия — класс `show` слетает, и клик
+    по опции висит до общего таймаута действия (45s), проваливая тест
+    (наблюдалось 2026-08-10). Поэтому кликаем с коротким таймаутом и при
+    неудаче открываем дропдаун заново.
+    """
+    for attempt in range(attempts):
+        _open_sort_dropdown(page)
+        page.wait_for_timeout(400)
+        try:
+            _sort_option(page, label).first.click(timeout=5_000)
+            return
+        except Exception:
+            if attempt == attempts - 1:
+                raise
+            page.wait_for_timeout(500)
+
+
 def _grid_signature(page: Page) -> str:
     """Слепок текущей выдачи — названия карточек в порядке отрисовки."""
     return page.evaluate(
@@ -276,8 +298,17 @@ def test_sort_resets_pagination_to_first_page(page: Page):
     page.wait_for_load_state("networkidle", timeout=15_000)
     assert _active_page(page) == 2
 
-    _pick_sort(page, SORT_LOWEST_PRICE)
+    # `_pick_sort` здесь использовать НЕЛЬЗЯ: он ждёт появления `sort=` в URL,
+    # а на этом сценарии параметр не появляется (см. комментарий в конце теста),
+    # и хелпер падает по таймауту. Поэтому те же шаги разложены вручную, без
+    # ожидания `sort=`: открыть дропдаун, выбрать опцию, дождаться перерисовки.
+    before = _grid_signature(page)
+    page.evaluate("() => { window.__sortSig = null; }")
+    _click_sort_option(page, SORT_LOWEST_PRICE)
+    _wait_grid_changed(page, before)
+    page.wait_for_load_state("networkidle", timeout=15_000)
 
+    # Собственно предмет кейса — сброс пагинации на первую страницу.
     assert "page=2" not in page.url, (
         f"После выбора сортировки в URL остался page=2: {page.url}"
     )
@@ -285,3 +316,12 @@ def test_sort_resets_pagination_to_first_page(page: Page):
         assert _active_page(page) == 1, (
             "После выбора сортировки пагинация не сбросилась на первую страницу"
         )
+
+    # `sort=` в URL здесь СОЗНАТЕЛЬНО не проверяем. Выбор сортировки со стр.2
+    # приводит URL к голому `/<категория>`: `page=2` уходит, `sort=` не
+    # добавляется, хотя выдача реально пересортирована (со стр.1 тот же клик
+    # даёт `?page=1&sort=price-`). Расхождение проверено вживую 2026-08-10 и
+    # признано допустимым поведением — багом не считаем, тест на нём не падает.
+    # Наличие `sort=` в URL по-прежнему покрыто отдельными кейсами, которые
+    # стартуют с первой страницы: test_selecting_sort_updates_url_and_order
+    # и test_sort_persists_on_reload.

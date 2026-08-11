@@ -30,12 +30,22 @@ HEADER_FAV_LINK = "a.btn__action.favorite__link"
 
 # Карточка товара в каталоге / на /favorites
 PRODUCT_CARD = ".product__item"
-# ВАЖНО: в каталоге на главной класс `product__item` переиспользован рекламными
-# баннерами (`image-banner product__item image-banner--start`), и такой баннер
-# идёт ПЕРВЫМ. `.product__item.first` брал баннер, внутри которого нет ни
-# сердечка, ни ссылки на товар — тест падал на «element(s) not found», хотя у
-# настоящих карточек всё на месте (проверено в браузере 2026-07-30).
-CATALOG_CARD = ".product__item:not(.image-banner)"
+# ВАЖНО: «первая карточка каталога на главной» дважды оказывалась не тем, чем
+# кажется, поэтому берём не `.first`, а первую карточку с сердечком внутри.
+# 1) Класс `product__item` переиспользован рекламными баннерами
+#    (`image-banner product__item image-banner--start`), и баннер идёт ПЕРВЫМ.
+#    Внутри него нет ни сердечка, ни ссылки на товар — тест падал на
+#    «element(s) not found» (проверено в браузере 2026-07-30).
+# 2) Исключить баннеры мало: следом идут товары не в наличии (подарочные
+#    сертификаты), у них ОБА `.btn__wrap` имеют `title="Нет в наличии"`, а
+#    сердечка «Добавить в список избранных» в карточке нет вовсе. Локатор
+#    сердечка был пустой → «Locator expected to be visible», хотя продукт
+#    исправен: на карточке с сердечком hover проявляет его штатно
+#    (проверено 2026-08-10).
+CATALOG_CARD_WITH_HEART = (
+    ".product__item:not(.image-banner)"
+    ":has(.btn__wrap[title*='избранн' i])"
+)
 # Сердечко на карточке (это div, не button)
 CARD_HEART = ".product__item .btn__wrap[title*='избранн' i]"
 CARD_HEART_ACTIVE = ".product__item .btn__wrap.is-active"
@@ -249,10 +259,10 @@ def test_add_to_favorites_from_catalog_card(page: Page):
             }
         }"""
     )
-    page.wait_for_selector(CATALOG_CARD, state="attached", timeout=15_000)
+    page.wait_for_selector(CATALOG_CARD_WITH_HEART, state="attached", timeout=15_000)
     page.wait_for_timeout(500)
 
-    card = page.locator(CATALOG_CARD).first
+    card = page.locator(CATALOG_CARD_WITH_HEART).first
     card.scroll_into_view_if_needed()
     expect(card).to_be_visible(timeout=10_000)
 
