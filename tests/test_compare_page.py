@@ -75,12 +75,58 @@ def _clear_compare(page: Page):
     )
 
 
+def _compare_count(page: Page) -> int:
+    """Сколько товаров сейчас в сравнении. Источник правды — localStorage."""
+    return page.evaluate(
+        """() => {
+            try {
+                const raw = JSON.parse(localStorage.getItem('compare') || '[]');
+                return Array.isArray(raw) ? raw.length : 0;
+            } catch (e) { return 0; }
+        }"""
+    )
+
+
 def _add_to_compare(page: Page, product_url: str):
-    """Открыть страницу товара и кликнуть «Сравнение»."""
+    """Открыть страницу товара и кликнуть «Сравнение», дождавшись факта добавления.
+
+    Раньше здесь стояла пауза в 400ms. Кнопка видима раньше, чем на неё навешен
+    обработчик, поэтому первый клик иногда терялся, товар в localStorage не
+    попадал — и /compare отдавал заглушку вместо `.compare__page`. Внешне это
+    выглядело как падение теста «Различия», хотя ломалась подготовка.
+    Ждём рост localStorage['compare'] и повторяем клик, если он не сработал;
+    перед повтором сверяемся со счётчиком, чтобы вторым кликом (кнопка —
+    переключатель) не снять только что добавленный товар.
+    """
     page.goto(product_url, wait_until="domcontentloaded", timeout=60_000)
-    expect(page.locator(BTN_COMPARE_PRODUCT).first).to_be_visible(timeout=15_000)
-    page.locator(BTN_COMPARE_PRODUCT).first.click()
-    page.wait_for_timeout(400)
+    before = _compare_count(page)
+
+    btn = page.locator(BTN_COMPARE_PRODUCT).first
+    expect(btn).to_be_visible(timeout=15_000)
+
+    for _ in range(3):
+        if _compare_count(page) > before:
+            return
+        btn.click()
+        try:
+            page.wait_for_function(
+                """expected => {
+                    try {
+                        const raw = JSON.parse(localStorage.getItem('compare') || '[]');
+                        return Array.isArray(raw) && raw.length >= expected;
+                    } catch (e) { return false; }
+                }""",
+                arg=before + 1,
+                timeout=5_000,
+            )
+            return
+        except Exception:
+            continue
+
+    raise AssertionError(
+        f"Товар {product_url} не добавился в сравнение за 3 клика "
+        f"(в localStorage['compare'] осталось {_compare_count(page)} шт.)"
+    )
 
 
 def _btn_with_text(page: Page, text_re: re.Pattern):
