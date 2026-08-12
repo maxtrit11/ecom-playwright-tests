@@ -20,6 +20,7 @@ BTN_SUBMIT = f"{MODAL_CREDIT} button.btn.credit"        # «Отправить �
 INPUT_NAME = f'{MODAL_CREDIT} input[placeholder="Введи имя и фамилию"]'
 INPUT_TEL = f'{MODAL_CREDIT} input[type="tel"]'
 COMPANIES = f"{MODAL_CREDIT} .list.company .credit__group"
+CONSENT_ROWS = f"{MODAL_CREDIT} .consent-block__row"
 
 SUCCESS_POPUP = ".modal__credit_success.show"
 
@@ -34,6 +35,30 @@ def _fill_phone(page: Page, number: str) -> None:
     tel = page.locator(INPUT_TEL).first
     tel.click()
     tel.press_sequentially(number, delay=60)
+
+
+def _accept_consents(page: Page) -> None:
+    """Отметить обязательные согласия в форме кредита.
+
+    Блок `.consent-block` («Я ознакомился с Условиями…» и «Я согласен на
+    передачу персональных данных…») добавили в форму позже — без обеих
+    галочек submit не уходит вообще: запроса `POST /general/v3/credits/`
+    нет, строки подсвечиваются классом `consent-block__row--error`, и
+    success-попап не появляется (проверено вживую 2026-08-12).
+
+    Сам `input[type=checkbox]` перекрыт кастомным `span.consent-block__box`
+    («intercepts pointer events»), поэтому кликаем именно по нему.
+    """
+    rows = page.locator(CONSENT_ROWS)
+    count = rows.count()
+    assert count >= 2, f"Ожидались ≥2 чекбокса согласия, найдено {count}"
+
+    for i in range(count):
+        row = rows.nth(i)
+        checkbox = row.locator("input[type=checkbox]")
+        if not checkbox.is_checked():
+            row.locator(".consent-block__box").click()
+        expect(checkbox).to_be_checked()
 
 
 @pytest.fixture
@@ -176,7 +201,9 @@ def test_empty_name_shows_error_on_submit(open_credit_popup: Page):
 
     # Альтернатива — наличие .validation / .error-сообщения рядом с полем
     has_validation = page.locator(f"{MODAL_CREDIT} .validation:visible").count() > 0 or \
-                     page.locator(f'{MODAL_CREDIT} [class*="error"]:visible').count() > 0
+                     page.locator(
+                         f'{MODAL_CREDIT} [class*="error"]:not([class*="consent"]):visible'
+                     ).count() > 0
 
     assert is_red or changed or has_validation, (
         f"Поле Имя не подсветилось ошибкой: border {border_before} → {border_after}, "
@@ -206,7 +233,9 @@ def test_empty_phone_shows_error_on_submit(open_credit_popup: Page):
     is_red = "rgb(229, 57, 53)" in border_after
     changed = border_before != border_after
     has_validation = page.locator(f"{MODAL_CREDIT} .validation:visible").count() > 0 or \
-                     page.locator(f'{MODAL_CREDIT} [class*="error"]:visible').count() > 0
+                     page.locator(
+                         f'{MODAL_CREDIT} [class*="error"]:not([class*="consent"]):visible'
+                     ).count() > 0
 
     assert is_red or changed or has_validation, (
         f"Поле Телефон не подсветилось ошибкой: border {border_before} → {border_after}, "
@@ -231,6 +260,9 @@ def test_successful_credit_application(open_credit_popup: Page):
     page.wait_for_timeout(500)
     _fill_phone(page, unique_phone)
     page.wait_for_timeout(500)
+
+    # Без обязательных согласий заявка не уходит — см. `_accept_consents`
+    _accept_consents(page)
 
     # Ждём что submit-кнопка кликабельна (форма прошла клиентскую валидацию)
     submit_btn = page.locator(BTN_SUBMIT).first
