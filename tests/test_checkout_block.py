@@ -110,10 +110,18 @@ REQUIRED_MSG = "Это обязательное поле"
 VIS_VALIDATION = f"{CHECKOUT_FORM} span.validation:visible"
 
 # --- Блок итогов (стоимость товара / доставка / итог) ---
-# Сводка живёт в липком сайдбаре `.cart__sidebar--fixed` строками `.list__item`.
-# Стоимость доставки динамическая: Кишинёв ≠ Молдова, а при самовывозе строка
-# доставки из итогов исчезает (проверено probe-скриптом на stage).
+# На странице ТРИ сайдбара `.cart__sidebar` (проверено вживую 2026-08-12):
+#   [0] `.cart__sidebar`            — конфигурация корзины (товары/скидка/итог);
+#   [1] `.cart__sidebar--checkout`  — сводка формы оформления: товары, ДОСТАВКА,
+#       скидка и прогресс-строка «Бесплатная доставка» (`.--proggress-bar`);
+#   [2] `.cart__sidebar--fixed`     — липкая строка «Итог».
+# Поэтому широкий `.cart__sidebar .list__item` собирает строки из всех трёх и
+# `.first` цепляет не тот блок — читаем сводку строго из `--checkout`, а итог
+# из `--fixed`.
 SUMMARY_ITEMS = ".cart__sidebar .list__items .list__item"
+CHECKOUT_SUMMARY = ".cart__sidebar--checkout"
+CHECKOUT_SUMMARY_ROWS = f"{CHECKOUT_SUMMARY} .list__item"
+SUMMARY_TOTAL = ".cart__sidebar--fixed .list__total.sum"
 ERR_REQUIRED = f"{CHECKOUT_FORM} .g-select-search-error"
 ERR_PHONE = f"{CHECKOUT_FORM} .phone.error"
 ERR_TERMS = f"{CHECKOUT_FORM} .terms.terms_error"
@@ -510,14 +518,59 @@ def _click_place_order(page: Page):
     page.wait_for_timeout(800)
 
 
-def _delivery_cost_in_summary(page: Page):
-    """Стоимость доставки (число) из строки «Доставка …» блока итогов.
-    None — если строки доставки в итогах нет (например, самовывоз)."""
-    row = page.locator(SUMMARY_ITEMS).filter(has_text=re.compile(r"Доставка"))
-    if row.count() == 0:
+def _money_to_bani(text: str):
+    """«5 499 MDL» / «6 649.05 MDL» → сумма в бани (копейках).
+
+    Считаем в бани, а не в леях: суммы бывают дробными, и «съедание» точки
+    даёт мусор вроде 664905 вместо 6649.05.
+    """
+    m = re.search(r"(\d[\d\s ]*(?:[.,]\d{1,2})?)\s*MDL", text)
+    if not m:
         return None
-    m = re.search(r"(\d[\d\s]*)\s*MDL", row.first.inner_text())
-    return int(re.sub(r"\D", "", m.group(1))) if m else None
+    raw = re.sub(r"[\s ]", "", m.group(1)).replace(",", ".")
+    return round(float(raw) * 100)
+
+
+def _checkout_summary(page: Page) -> dict:
+    """Сводка формы оформления в бани: goods / delivery / discount / total.
+
+    `delivery` = None, если строки «Доставка» в сводке нет (самовывоз).
+    Прогресс-строку «Бесплатная доставка» пропускаем: там не сумма заказа,
+    а порог бесплатной доставки («5 199 / 600 MDL»).
+    """
+    rows = page.evaluate(
+        """() => {
+            const box = document.querySelector('.cart__sidebar--checkout');
+            if (!box) return null;
+            return [...box.querySelectorAll('.list__item')]
+                .filter(r => !r.className.includes('proggress'))
+                .map(r => ({
+                    name: (r.querySelector('.list__name')?.innerText || '').trim(),
+                    sum: (r.querySelector('.list__sum')?.innerText || '').trim(),
+                }));
+        }"""
+    )
+    assert rows is not None, "Блок сводки .cart__sidebar--checkout не найден"
+
+    out = {"goods": None, "delivery": None, "discount": 0}
+    for row in rows:
+        name = row["name"]
+        if re.match(r"^\s*Стоимость товаров", name):
+            out["goods"] = _money_to_bani(row["sum"])
+        elif re.match(r"^\s*Доставка", name):
+            out["delivery"] = _money_to_bani(row["sum"])
+        elif re.match(r"^\s*Скидка", name):
+            out["discount"] = _money_to_bani(row["sum"]) or 0
+
+    out["total"] = _money_to_bani(page.locator(SUMMARY_TOTAL).first.inner_text())
+    return out
+
+
+def _select_delivery_type(page: Page, radio_id: str) -> None:
+    """Выбрать тип доставки и дождаться, что радио реально переключилось."""
+    _click_radio_by_id(page, radio_id)
+    expect(page.locator(f"{CHECKOUT_FORM} input#{radio_id}")).to_be_checked(timeout=5_000)
+    page.wait_for_timeout(800)  # пересчёт сводки на клиенте
 
 
 # ===========================================================================
@@ -598,8 +651,18 @@ def test_dont_call_makes_phone_optional(checkout: Page):
 
 
 # ===========================================================================
-# Доп. к 376: стоимость доставки в итогах меняется при смене типа/способа
-# (Кишинёв ≠ Молдова; самовывоз убирает доставку из суммы)
+# Доп. к 376: итог пересчитывается при смене типа/способа доставки
+#
+# Раньше тест требовал «стоимость доставки по Кишинёву > 0» и «Кишинёв ≠
+# Молдова». Это привязка к настройкам цен: у магазина есть порог бесплатной
+# доставки (строка «Бесплатная доставка 5 199 / 600 MDL» в сводке), и как
+# только заказ его перебивает, доставка становится 0 MDL для ОБОИХ типов —
+# тест падал на исправном продукте (e2e run 31595555992, товар за 5 499 MDL).
+#
+# Поэтому проверяем не величины, а инварианты, которые верны при любых ценах:
+#   • при доставке по адресу строка «Доставка» в сводке есть, сумма ≥ 0;
+#   • Итог == Стоимость товаров − Скидка + Доставка;
+#   • самовывоз убирает строку доставки, и Итог == товары − скидка.
 # ===========================================================================
 def test_delivery_cost_updates_in_summary(checkout: Page):
     page = checkout
@@ -609,28 +672,36 @@ def test_delivery_cost_updates_in_summary(checkout: Page):
         _click_radio_by_id(page, "delivery")
         page.wait_for_timeout(500)
 
-    # Тип доставки = Кишинёв → есть ненулевая стоимость доставки
-    _click_radio_by_id(page, "delivery-chisinau")
-    page.wait_for_timeout(1_000)
-    chisinau = _delivery_cost_in_summary(page)
-    assert chisinau and chisinau > 0, (
-        f"В итогах нет стоимости доставки по Кишинёву: {chisinau}"
-    )
+    for radio_id, human in (("delivery-chisinau", "Кишинёв"), ("delivery-region", "Молдова")):
+        _select_delivery_type(page, radio_id)
+        s = _checkout_summary(page)
 
-    # Тип доставки = Молдова → стоимость доставки изменилась
-    _click_radio_by_id(page, "delivery-region")
-    page.wait_for_timeout(1_000)
-    region = _delivery_cost_in_summary(page)
-    assert region and region != chisinau, (
-        f"Стоимость доставки не изменилась при смене Кишинёв→Молдова: "
-        f"{chisinau} → {region}"
-    )
+        assert s["delivery"] is not None, (
+            f"При доставке по адресу ({human}) в сводке нет строки «Доставка»"
+        )
+        assert s["delivery"] >= 0, (
+            f"Отрицательная стоимость доставки ({human}): {s['delivery']} бани"
+        )
+        expected = s["goods"] - s["discount"] + s["delivery"]
+        assert s["total"] == expected, (
+            f"Итог не сходится ({human}): товары {s['goods']} − скидка "
+            f"{s['discount']} + доставка {s['delivery']} = {expected}, "
+            f"а в сводке {s['total']} (в бани)"
+        )
 
-    # Способ = Самовывоз → строка доставки исчезает из итогов
+    # Способ = Самовывоз → строка доставки исчезает из сводки, итог без неё
     _click_radio_by_id(page, "self-call")
     expect(
-        page.locator(SUMMARY_ITEMS).filter(has_text=re.compile(r"Доставка"))
+        page.locator(CHECKOUT_SUMMARY_ROWS).filter(has_text=re.compile(r"Доставка"))
     ).to_have_count(0, timeout=5_000)
+
+    s = _checkout_summary(page)
+    assert s["delivery"] is None
+    expected = s["goods"] - s["discount"]
+    assert s["total"] == expected, (
+        f"При самовывозе итог не равен товары − скидка: {s['goods']} − "
+        f"{s['discount']} = {expected}, а в сводке {s['total']} (в бани)"
+    )
 
 
 # ===========================================================================
