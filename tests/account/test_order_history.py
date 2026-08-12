@@ -117,8 +117,23 @@ def test_order_history_page_displayed(page: Page):
     heading = page.locator(PAGE_HEADING)
     expect(heading).to_be_visible()
 
-    # Фильтры видимы
-    expect(page.locator(TABLE_FILTERS)).to_be_visible()
+    # Фильтры видимы.
+    # Панель разбита на ДВА ряда `.account-table__filters` (проверено вживую
+    # 2026-08-12): ряд 1 — «Поиск» и «Статус заказа», ряд 2 — «Дата заказа»,
+    # «Компания» и «Избранные заказы». Раньше ряд был один, поэтому строгий
+    # `expect` по общему селектору падал со strict mode violation, а не по
+    # вине продукта. Проверяем все ряды и наличие заявленных фильтров.
+    filters = page.locator(TABLE_FILTERS)
+    assert filters.count() >= 1, "Панель фильтров на странице не найдена"
+
+    filters_text = ""
+    for i in range(filters.count()):
+        expect(filters.nth(i)).to_be_visible()
+        filters_text += " " + (filters.nth(i).inner_text() or "")
+
+    upper = filters_text.upper()
+    for label in ("ПОИСК", "СТАТУС", "ДАТА"):
+        assert label in upper, f"В фильтрах нет «{label}»: {filters_text.strip()}"
 
     # Заголовки колонок: Номер, Дата оформления, Тип доставки, Статус заказа, Действия
     header = page.locator(TABLE_HEADER)
