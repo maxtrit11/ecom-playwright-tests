@@ -36,6 +36,33 @@ SORT_BTN = ".sorting-bar__btn"
 SORT_OPTION = ".sorting-bar__list span"
 
 
+def _card_prices(page: Page) -> list[int]:
+    """Цены товаров в наличии из сетки результатов, в порядке отображения.
+
+    Раньше цены собирались селектором `[class*='price']` по ВСЕЙ странице:
+    первыми в DOM идут элементы фильтра цены (границы диапазона), поэтому
+    в сравнение попадала не цена товара, а верхняя граница фильтра — тест
+    падал с «первая цена 431999.0 > последняя 296.65» на исправной
+    сортировке (e2e run 31599538819).
+
+    Читаем то же, что `_in_stock_prices` в tests/test_sorting.py: цену
+    карточки `.product__prices .no-discount`, пропуская товары «нет в
+    наличии» (они уезжают в конец списка независимо от цены) и карточки
+    без цены.
+    """
+    return page.evaluate(
+        """() => [...document.querySelectorAll('.product__items .product__item')]
+            .filter(c => !c.querySelector('.product__out-of-stock-label'))
+            .map(c => {
+                const n = c.querySelector('.product__prices .no-discount');
+                if (!n) return null;
+                const v = parseInt(n.textContent.replace(/[^\\d]/g, ''));
+                return isNaN(v) ? null : v;
+            })
+            .filter(v => v != null);"""
+    )
+
+
 EXISTING_QUERY = "jbl"
 NON_EXISTING_QUERY = "sdfsdds"
 
@@ -430,20 +457,12 @@ def test_sort_by_price_ascending(page: Page):
         page.wait_for_load_state("networkidle")
         page.wait_for_timeout(1000)
 
-        # Собираем цены
-        prices = page.locator("[class*='price']")
-        price_values = []
-        for i in range(min(prices.count(), 5)):
-            text = prices.nth(i).text_content().strip()
-            numbers = re.findall(r"[\d\s]+[.,]?\d*", text)
-            if numbers:
-                val = float(numbers[0].replace(" ", "").replace(",", "."))
-                price_values.append(val)
+        price_values = _card_prices(page)
 
         if len(price_values) >= 2:
-            assert price_values[0] <= price_values[-1], (
-                f"Сортировка не работает: первая цена {price_values[0]} > "
-                f"последняя {price_values[-1]}"
+            assert price_values == sorted(price_values), (
+                f"Цены не по возрастанию при сортировке «от низкой цены»: "
+                f"{price_values}"
             )
     else:
         pytest.skip("Опция сортировки по цене не найдена")
