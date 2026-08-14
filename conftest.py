@@ -1,4 +1,6 @@
+import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -359,6 +361,61 @@ def _resilient_timeouts(page):
         # На старых версиях expect.set_options может отсутствовать — не критично.
         pass
     yield
+
+
+# ---------------------------------------------------------------------------
+# Учётки тестовых пользователей.
+#
+# tests/fixtures/users.json содержит реальные учётки stage и потому лежит в
+# .gitignore — на свежей машине сразу после `git clone` его НЕТ. Раньше тесты
+# кабинета читали файл на уровне модуля (`json.loads(...)` рядом с импортами),
+# и его отсутствие давало не скип, а ОШИБКУ СБОРА: pytest падал на импорте
+# tests/account/*, так и не добравшись до остальных файлов суиты.
+#
+# Теперь недостающий (или ещё не заполненный) файл подменяется шаблоном
+# users.example.json, а тесты, которым нужен реальный вход, помечаются скипом
+# с инструкцией. Смысл: свежий клон собирается и гоняет всё, что не требует
+# учёток, а причина скипа видна в отчёте вместо красной ошибки импорта.
+#
+# Плейсхолдеры ловим отдельно: CI-шаг «Provision test credentials» при пустом
+# секрете USERS_JSON копирует example в users.json — файл есть, но пароли в нём
+# фиктивные. Без этой проверки такие прогоны давали бы ложные падения логина.
+# ---------------------------------------------------------------------------
+_FIXTURES_DIR = Path(__file__).parent / "tests" / "fixtures"
+_USERS_FILE = _FIXTURES_DIR / "users.json"
+_USERS_EXAMPLE = _FIXTURES_DIR / "users.example.json"
+_PLACEHOLDER = "REPLACE_ME"
+
+_SETUP_HINT = (
+    "скопируй tests/fixtures/users.example.json в tests/fixtures/users.json "
+    "и впиши реальные учётки stage (файл в .gitignore, в репозиторий не попадает)"
+)
+
+
+def _has_placeholders(users: dict) -> bool:
+    return any(
+        value == _PLACEHOLDER
+        for section in users.values()
+        if isinstance(section, dict)
+        for value in section.values()
+    )
+
+
+def load_users() -> tuple[dict, str | None]:
+    """Вернуть учётки и причину скипа.
+
+    Причина — None, когда файл на месте и заполнен; иначе строка для
+    `pytest.mark.skipif`. Словарь возвращается в любом случае, чтобы модуль
+    импортировался и обращения к `USERS[...]` на уровне модуля не падали.
+    """
+    if not _USERS_FILE.exists():
+        example = json.loads(_USERS_EXAMPLE.read_text(encoding="utf-8"))
+        return example, f"нет tests/fixtures/users.json — {_SETUP_HINT}"
+
+    users = json.loads(_USERS_FILE.read_text(encoding="utf-8"))
+    if _has_placeholders(users):
+        return users, f"в users.json остались значения {_PLACEHOLDER} — {_SETUP_HINT}"
+    return users, None
 
 
 # ---------------------------------------------------------------------------

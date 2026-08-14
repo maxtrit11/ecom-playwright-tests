@@ -5,18 +5,21 @@
 ночном CI эти тесты исключаются, а локально гоняются как обычно.
 """
 
-import json
 import re
-from pathlib import Path
 
 import pytest
 from playwright.sync_api import Page, expect
 
-pytestmark = pytest.mark.requires_auth
+from conftest import load_users
 
-# Загрузка данных пользователей
-FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
-USERS = json.loads((FIXTURES_DIR / "users.json").read_text(encoding="utf-8"))
+# Учётки: при отсутствии/незаполненности users.json вернётся шаблон и причина
+# скипа — файл в .gitignore, и на свежем клоне его нет (подробности в conftest).
+USERS, _USERS_SKIP = load_users()
+
+pytestmark = [
+    pytest.mark.requires_auth,
+    pytest.mark.skipif(_USERS_SKIP is not None, reason=_USERS_SKIP or ""),
+]
 
 # Селекторы страницы «История заказов» (реальная разметка stage)
 PAGE_ACCOUNT = ".page-account"
