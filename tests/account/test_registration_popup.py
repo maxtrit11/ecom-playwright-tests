@@ -1,9 +1,21 @@
 """Тесты поп-апа Регистрация"""
 
+import re
 import time
 
 import pytest
 from playwright.sync_api import Page, expect
+
+from conftest import load_users
+
+USERS, _ = load_users()
+
+# Телефон уже зарегистрированного пользователя — для проверки дубля.
+REGISTERED_PHONE = USERS["registerUser"]["phone"]
+
+# Эндпоинт регистрации: по числу запросов к нему проверяется защита от
+# двойного клика (см. соответствующий тест).
+REGISTER_ENDPOINT = "/auth/users/"
 
 
 # ---------------------------------------------------------------------------
@@ -268,3 +280,130 @@ def test_successful_registration(page: Page):
     expect(
         page.get_by_text("была отправлена ссылка")
     ).to_be_visible(timeout=15_000)
+
+
+# ---------------------------------------------------------------------------
+# Хелпер: заполнить форму регистрации валидными данными
+# ---------------------------------------------------------------------------
+def fill_registration_form(page: Page, email: str, phone: str) -> None:
+    """Заполнить все обязательные поля физлица и отметить согласие."""
+    form = page.locator(".modal__authentification__ecom-content-form")
+
+    form.locator('input[placeholder="Ваше имя"]').fill("Тест")
+    form.locator('input[placeholder="Ваше фамилия"]').fill("Тестов")
+    form.locator('input[placeholder="Введи e-mail адрес"]').first.fill(email)
+    form.locator('input[type="tel"].iti__tel-input').fill(phone)
+
+    password_fields = form.locator('input[placeholder="********"]')
+    password_fields.nth(0).fill("TestPass123!")
+    password_fields.nth(1).fill("TestPass123!")
+
+    # Чекбокс перекрыт кастомной разметкой — кликаем событием, как в кейсе 7
+    form.locator('input[type="checkbox"]').dispatch_event("click")
+
+
+# ===========================================================================
+# Кейс 134: Регистрация — переход к авторизации
+# ===========================================================================
+def test_go_to_authorization_from_registration(page: Page):
+    """«Есть аккаунт? Войти» возвращает из регистрации в форму входа."""
+    open_registration_popup(page)
+
+    modal = page.locator(".modal__authentification__ecom-content")
+    modal.get_by_role("button", name="Есть аккаунт? Войти").click()
+
+    # Сначала дожидаемся, пока уедет форма регистрации: на время анимации
+    # перехода в DOM ЛЕЖАТ ОБА заголовка и оба набора полей, и любая проверка
+    # «сколько полей пароля» в этот момент ловит смесь двух форм.
+    expect(page.get_by_role("heading", name="Регистрация")).not_to_be_visible(
+        timeout=15_000
+    )
+
+    # Открылась форма авторизации: заголовок, кнопка входа и одно поле пароля
+    expect(modal.locator("h2")).to_contain_text("Аутентификация")
+    expect(modal.locator('button[type="submit"]')).to_contain_text(
+        "Войдите в аккаунт"
+    )
+    expect(modal.locator('input[type="password"]')).to_have_count(1)
+
+
+# ===========================================================================
+# Кейс 141: Ошибка при использовании номера зарегистрированного пользователя
+# ===========================================================================
+def test_duplicate_phone_shows_error(page: Page):
+    """Регистрация на занятый номер телефона отклоняется с понятной ошибкой."""
+    open_registration_popup(page)
+
+    # E-mail обязательно уникальный: иначе непонятно, на что именно ругнулся
+    # сервер — на почту или на телефон, и тест проверял бы не тот кейс.
+    unique_email = f"testqa_{int(time.time() * 1000)}@mailinator.com"
+    fill_registration_form(page, unique_email, REGISTERED_PHONE)
+
+    form = page.locator(".modal__authentification__ecom-content-form")
+    # До отправки валидация молчит — значит форма заполнена корректно
+    expect(form.locator(".validation:visible")).to_have_count(0)
+
+    form.locator('button[type="submit"]').first.click()
+
+    # Ошибка приходит от сервера в блок валидации под полем телефона.
+    # Регистр игнорируем: текст выводится капсом через CSS.
+    expect(form.locator(".validation:visible")).to_contain_text(
+        re.compile("номером телефона уже существует", re.I), timeout=15_000
+    )
+
+    # Регистрация не выполнилась — поп-ап остался открытым
+    expect(page.get_by_role("heading", name="Регистрация")).to_be_visible()
+
+
+# ===========================================================================
+# Кейс 143: Защита от двойного клика по кнопке регистрации
+# ===========================================================================
+@pytest.mark.real_submit
+def test_double_click_creates_single_account(page: Page):
+    """Двойной клик по «Зарегистрироваться» отправляет ровно один запрос.
+
+    Проверяем не внешний вид кнопки, а число POST-запросов на создание
+    пользователя: именно дубль запроса означает второй аккаунт (и второе письмо
+    активации). Продукт защищается полноэкранным лоадером `.vld-overlay`,
+    который перехватывает повторный клик — сама кнопка при этом не получает
+    атрибут `disabled`, так что проверка на disabled была бы ложно-зелёной.
+    """
+    open_registration_popup(page)
+
+    requests: list[str] = []
+    page.on(
+        "request",
+        lambda r: (
+            requests.append(r.url)
+            if r.method == "POST" and REGISTER_ENDPOINT in r.url
+            else None
+        ),
+    )
+
+    unique = int(time.time() * 1000)
+    fill_registration_form(
+        page,
+        f"testqa_dbl_{unique}@mailinator.com",
+        f"61{str(unique)[-6:]}",
+    )
+
+    submit = page.locator(
+        ".modal__authentification__ecom-content-form button[type='submit']"
+    ).first
+
+    # Второй клик — force: лоадер накрывает кнопку, и обычный click просто
+    # ждал бы её освобождения вместо того, чтобы сымитировать спешащего юзера.
+    submit.click()
+    submit.click(force=True)
+
+    # Регистрация всё-таки прошла — иначе «один запрос» ничего не доказывает
+    expect(page.get_by_text("была отправлена ссылка")).to_be_visible(
+        timeout=20_000
+    )
+
+    # Даём заведомо опоздавшему дублю время долететь
+    page.wait_for_timeout(3_000)
+    assert len(requests) == 1, (
+        f"Ожидался 1 запрос регистрации, отправлено {len(requests)} — "
+        f"двойной клик создаёт лишний аккаунт"
+    )

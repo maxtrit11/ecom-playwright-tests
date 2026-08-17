@@ -166,3 +166,63 @@ def test_empty_required_fields_show_error(page: Page):
     expect(page.locator(NAME_INPUT)).to_be_enabled(timeout=15_000)
     assert page.locator(NAME_INPUT).input_value() != ""
     assert page.locator(SURNAME_INPUT).input_value() != ""
+
+
+# ===========================================================================
+# Кейс 147: Личные данные — изменение одного поля
+# ===========================================================================
+def test_change_single_field_keeps_others(page: Page):
+    """Меняем только Имя — Фамилия сохраняется прежней, а не затирается."""
+    original_name = page.locator(NAME_INPUT).input_value()
+    original_surname = page.locator(SURNAME_INPUT).input_value()
+    assert original_surname, "Фамилия пуста — тест не сможет проверить, что она уцелела"
+
+    new_name = f"OnlyName{str(int(time.time() * 1000))[-4:]}"
+    page.locator(NAME_INPUT).fill(new_name)
+
+    click_save_and_wait(page)
+
+    # После перезагрузки: новое имя сохранилось, фамилия не пострадала
+    page.reload()
+    expect(page.locator(NAME_INPUT)).to_be_enabled(timeout=15_000)
+    expect(page.locator(NAME_INPUT)).to_have_value(new_name)
+    expect(page.locator(SURNAME_INPUT)).to_have_value(original_surname)
+
+    # Возвращаем исходное имя
+    page.locator(NAME_INPUT).fill(original_name)
+    click_save_and_wait(page)
+
+
+# ===========================================================================
+# Кейс 148: Личные данные — email недоступен для редактирования
+# ===========================================================================
+def test_email_field_is_not_editable(page: Page):
+    """E-mail заблокирован для правки, рядом — подсказка обратиться к админу.
+
+    Продукт блокирует поле не атрибутом `disabled`, а CSS: обёртка получает
+    класс `disabled` и `pointer-events: none`, из-за чего кликнуть и напечатать
+    в поле нельзя. Поэтому проверяем именно НЕДОСТУПНОСТЬ ДЛЯ ПОЛЬЗОВАТЕЛЯ —
+    `to_be_disabled()` здесь дал бы ложное падение, а `fill()` наоборот ложно
+    прошёл бы: он ставит значение программно в обход pointer-events.
+    """
+    email_wrapper = page.locator(".g-input.disabled").filter(
+        has=page.locator('input[placeholder="Введи e-mail адрес"]')
+    )
+    expect(email_wrapper).to_have_count(1)
+
+    email_input = email_wrapper.locator("input")
+    original_email = email_input.input_value()
+    assert original_email, "Поле e-mail пустое — проверять нечего"
+
+    # Пользовательский ввод в поле не проходит: клики до него не доходят
+    assert (
+        email_wrapper.evaluate("el => getComputedStyle(el).pointerEvents") == "none"
+    ), "E-mail доступен для клика — поле можно редактировать"
+
+    # Рядом объяснение, почему поле закрыто
+    expect(page.locator(".g-warn-text")).to_contain_text(
+        "свяжитесь с администратором"
+    )
+
+    # Значение осталось прежним
+    expect(email_input).to_have_value(original_email)

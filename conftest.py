@@ -419,6 +419,145 @@ def load_users() -> tuple[dict, str | None]:
 
 
 # ---------------------------------------------------------------------------
+# Вход в кабинет через поп-ап авторизации.
+#
+# Логин был скопирован в каждый файл кабинета отдельно. Тесты смены пароля
+# логинятся ТРИЖДЫ (старым паролем, новым, и ещё раз при восстановлении), так
+# что копия номер четыре превратилась бы в четыре места, где чинить один и тот
+# же селектор шапки. Держим здесь, рядом с `load_users`.
+# ---------------------------------------------------------------------------
+AUTH_MODAL = ".modal__authentification__ecom-content"
+BTN_HEADER_AUTH = ".btn__action.btn__auth"
+EMAIL_INPUT = 'input[placeholder="Введи e-mail адрес"]'
+
+# Итог попытки входа. Ждём НЕ только успех: при неверном пароле форма показывает
+# «Неверный логин или пароль», и если ждать только смены шапки — хелпер честно
+# висит до таймаута. А тестам смены пароля неудачный вход нужен как ОЖИДАЕМЫЙ
+# результат (проверяем, что старый пароль отвалился), и он должен быть быстрым.
+# Кнопка шапки: «Войти» у гостя, «Кабинет» у авторизованного.
+_LOGIN_RESULT_JS = """
+() => {
+  const b = document.querySelector('%s');
+  if (b && /Кабинет|Cabinet/i.test(b.innerText)) return 'ok';
+  const e = document.querySelector('%s-form-error');
+  if (e && e.offsetParent !== null && e.innerText.trim()) return 'error';
+  return null;
+}
+""" % (BTN_HEADER_AUTH, AUTH_MODAL)
+
+
+def goto_resilient(page, path: str) -> None:
+    """Навигация с повтором на ERR_ABORTED.
+
+    `/ru` отдаёт клиентский редирект на `/`, и если он случается, пока
+    Playwright ещё ждёт `domcontentloaded`, прилетает net::ERR_ABORTED —
+    навигация не «упала», её просто перебила следующая. Это же ловили и тесты
+    истории заказов после логина. Повторяем вместо того, чтобы отдавать тесту
+    ложное падение на ровном месте.
+    """
+    for attempt in range(3):
+        try:
+            page.goto(path, wait_until="domcontentloaded", timeout=60_000)
+            return
+        except Exception as exc:
+            if "ERR_ABORTED" in str(exc) and attempt < 2:
+                page.wait_for_timeout(1_500)
+                continue
+            raise
+
+
+def open_auth_modal(page):
+    """Открыть поп-ап авторизации из шапки и вернуть его локатор.
+
+    Кликаем с повтором: первый клик по шапке после гидрации регулярно теряется
+    (подробности — в блоке про гидрацию выше).
+    """
+    page.locator(BTN_HEADER_AUTH).wait_for(state="visible", timeout=15_000)
+    modal = page.locator(AUTH_MODAL).first
+    for _ in range(3):
+        page.locator(BTN_HEADER_AUTH).click(force=True)
+        try:
+            modal.wait_for(state="visible", timeout=5_000)
+            return modal
+        except Exception:
+            continue
+    modal.wait_for(state="visible", timeout=5_000)
+    return modal
+
+
+def login_via_popup(page, email: str, password: str) -> bool:
+    """Войти в кабинет. Возвращает True при успехе, False — если вход не прошёл.
+
+    Именно bool, а не исключение: тестам смены пароля нужно УТВЕРЖДАТЬ, что
+    старый пароль больше не подходит, и восстанавливать учётку, подбирая
+    рабочий пароль. Падение внутри хелпера там только мешает.
+    """
+    goto_resilient(page, "/ru")
+    modal = open_auth_modal(page)
+
+    page.locator(EMAIL_INPUT).first.fill(email)
+    modal.locator('input[type="password"]').first.fill(password)
+    modal.locator('button[type="submit"]').first.click()
+
+    try:
+        outcome = page.wait_for_function(_LOGIN_RESULT_JS, timeout=20_000).json_value()
+    except Exception:
+        return False
+    if outcome != "ok":
+        return False
+
+    # Успешный логин перезагружает страницу — шапка гидрируется заново, и клик
+    # по «Кабинет» сразу после входа теряется без этого ожидания.
+    wait_hydrated(page)
+    return True
+
+
+def open_account_page(page, path: str = "/ru/account") -> None:
+    """Открыть раздел кабинета прямой ссылкой.
+
+    Через меню «Кабинет» надёжнее не выходит: выпадашка раскрывается по клику,
+    а первый клик по шапке после гидрации регулярно теряется — пункт «Личные
+    данные» так и не всплывает, и тест падает не на проверке, а на попытке до
+    него докликаться (проверено: 4 из 4 тестов удаления аккаунта отвалились
+    именно здесь). Прямая навигация проверяет то же самое — раздел доступен
+    авторизованному — но без гонки.
+
+    Сразу после логина приложение делает собственный редирект, и `goto` в этот
+    момент прилетает ERR_ABORTED — его гасит `goto_resilient`.
+    """
+    goto_resilient(page, path)
+
+
+def logout(page) -> None:
+    """Выйти из аккаунта через меню «Кабинет».
+
+    Если пункт «Выйти» почему-то недоступен, сносим сессию принудительно:
+    задача хелпера — гарантированно оставить браузер гостем, а не проверять
+    сам логаут (это отдельный кейс).
+    """
+    try:
+        goto_resilient(page, "/ru")
+        page.locator(BTN_HEADER_AUTH).click()
+        page.get_by_role("button", name="Выйти", exact=True).click(timeout=10_000)
+        page.wait_for_function(
+            "() => { const b = document.querySelector('%s');"
+            " return !!b && !/Кабинет|Cabinet/i.test(b.innerText); }"
+            % BTN_HEADER_AUTH,
+            timeout=15_000,
+        )
+        return
+    except Exception:
+        pass
+
+    page.context.clear_cookies()
+    try:
+        page.evaluate("() => { localStorage.clear(); sessionStorage.clear(); }")
+    except Exception:
+        pass
+    goto_resilient(page, "/ru")
+
+
+# ---------------------------------------------------------------------------
 # Отчётность (терминальная сводка, HTML, сводка для GitHub Actions) вынесена
 # в reporting.py: здесь — поведение тестов, там — представление результатов.
 # ---------------------------------------------------------------------------

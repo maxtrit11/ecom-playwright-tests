@@ -45,6 +45,18 @@ ORDER_VIEW_BTN = "button:has(svg.open)"
 # Модалка деталей заказа
 ORDER_DETAILS_MODAL = ".modal__authentification__ecom"
 
+# Кнопка «избранный заказ» — звёздочка в колонке «Действия». Берём по иконке
+# в спрайте, а не по порядку: в ячейке три кнопки (звезда, глаз, PDF), и любой
+# новый экшен сдвинул бы индекс.
+ORDER_FAV_BTN = "button:has(use[href*='i-icon-favorite'])"
+# Отмеченная звезда получает класс `active` на svg
+ORDER_FAV_ACTIVE = f"{ORDER_FAV_BTN} svg.active"
+
+# Фильтр «Избранные заказы» — отдельный v-select во втором ряду фильтров
+FAV_FILTER_LABEL = "Избранные заказы"
+FAV_FILTER_ONLY = "Показать только избранные"
+FAV_FILTER_ALL = "Показать все"
+
 # Sidebar
 SIDEBAR = ".account-sidebar"
 SIDEBAR_ITEM = ".account-sidebar__list__item"
@@ -325,3 +337,119 @@ def test_close_order_details(page: Page):
     # Модалка закрыта, пользователь остаётся на «История заказов»
     expect(details).not_to_be_visible(timeout=10_000)
     expect(page).to_have_url(re.compile(r"account/history"), timeout=10_000)
+
+
+# ===========================================================================
+# Избранные заказы (функционал добавлен позже, кейсов в Testiny пока нет)
+#
+# Звезда в колонке «Действия» помечает заказ избранным
+# (`POST /general/v2/order/<id>/toggle-favorite/`), а фильтр «Избранные заказы»
+# сужает список до помеченных.
+#
+# Учётка на stage общая: помеченный заказ виден всем следующим тестам и
+# прогонам. Поэтому каждый тест снимает свою отметку обратно в `finally` —
+# иначе набор избранного растёт от прогона к прогону и ассерты «стало на 1
+# больше» со временем перестают что-либо значить.
+# ===========================================================================
+def is_favorite(row) -> bool:
+    """Отмечен ли заказ звёздочкой."""
+    return row.locator(ORDER_FAV_ACTIVE).count() > 0
+
+
+def find_unfavorited_row(page: Page):
+    """Первый заказ БЕЗ отметки — на нём безопасно проверять включение."""
+    rows = page.locator(ORDER_ROW)
+    expect(rows.first).to_be_visible(timeout=15_000)
+
+    for i in range(rows.count()):
+        if not is_favorite(rows.nth(i)):
+            return rows.nth(i)
+
+    pytest.skip("Все заказы на странице уже в избранном — нечего отмечать")
+
+
+def toggle_favorite(page: Page, row, expect_active: bool) -> None:
+    """Кликнуть звезду и дождаться нового состояния."""
+    row.locator(ORDER_FAV_BTN).click()
+    star = row.locator(ORDER_FAV_ACTIVE)
+    if expect_active:
+        expect(star).to_have_count(1, timeout=15_000)
+    else:
+        expect(star).to_have_count(0, timeout=15_000)
+
+
+def select_favorite_filter(page: Page, option: str) -> None:
+    """Выбрать значение в выпадающем фильтре «Избранные заказы»."""
+    item = page.locator(".account-table__filters-item").filter(
+        has_text=FAV_FILTER_LABEL
+    )
+    item.locator(".vs__dropdown-toggle").click()
+    page.get_by_role("option", name=option).click()
+    # Список перезапрашивается с сервера — ждём, пока таблица перерисуется
+    page.wait_for_timeout(2_000)
+
+
+# ---------------------------------------------------------------------------
+# Отметить заказ избранным и снять отметку
+# ---------------------------------------------------------------------------
+def test_toggle_order_favorite(page: Page):
+    """Звезда включается, переживает перезагрузку и снимается обратно."""
+    row = find_unfavorited_row(page)
+    order_no = row.locator(f"{ORDER_ITEM}.--id-cell span").inner_text()
+
+    try:
+        toggle_favorite(page, row, expect_active=True)
+
+        # Отметка сохраняется на сервере, а не только в состоянии Vue
+        page.reload(wait_until="domcontentloaded")
+        expect(page.locator(TABLE)).to_be_visible(timeout=15_000)
+        reloaded = page.locator(ORDER_ROW).filter(has_text=order_no).first
+        expect(reloaded.locator(ORDER_FAV_ACTIVE)).to_have_count(1, timeout=15_000)
+    finally:
+        # Возвращаем заказ в исходное состояние в любом случае
+        current = page.locator(ORDER_ROW).filter(has_text=order_no).first
+        if current.count() and is_favorite(current):
+            toggle_favorite(page, current, expect_active=False)
+
+
+# ---------------------------------------------------------------------------
+# Фильтр «Показать только избранные»
+# ---------------------------------------------------------------------------
+def test_favorite_filter_shows_only_favorites(page: Page):
+    """Фильтр оставляет только отмеченные заказы, «Показать все» — возвращает список."""
+    rows = page.locator(ORDER_ROW)
+    expect(rows.first).to_be_visible(timeout=15_000)
+    total_before = rows.count()
+
+    # Гарантируем хотя бы один избранный заказ: на чистой учётке фильтр иначе
+    # вернул бы пусто, и тест «прошёл» бы, ничего не проверив.
+    row = find_unfavorited_row(page)
+    order_no = row.locator(f"{ORDER_ITEM}.--id-cell span").inner_text()
+
+    try:
+        toggle_favorite(page, row, expect_active=True)
+
+        select_favorite_filter(page, FAV_FILTER_ONLY)
+
+        filtered = page.locator(ORDER_ROW)
+        count = filtered.count()
+        assert count > 0, "Фильтр «только избранные» не показал ни одного заказа"
+        assert count <= total_before, (
+            f"После фильтрации заказов стало больше: {count} > {total_before}"
+        )
+
+        # Каждая строка в выдаче — действительно избранная
+        assert filtered.locator(ORDER_FAV_ACTIVE).count() == count, (
+            "В выдаче фильтра есть заказы без отметки «избранное»"
+        )
+
+        # Отмеченный заказ попал в выдачу
+        expect(filtered.filter(has_text=order_no)).to_have_count(1)
+
+        # «Показать все» возвращает полный список
+        select_favorite_filter(page, FAV_FILTER_ALL)
+        expect(page.locator(ORDER_ROW)).to_have_count(total_before, timeout=15_000)
+    finally:
+        current = page.locator(ORDER_ROW).filter(has_text=order_no).first
+        if current.count() and is_favorite(current):
+            toggle_favorite(page, current, expect_active=False)

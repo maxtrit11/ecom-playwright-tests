@@ -111,3 +111,93 @@ def test_empty_fields_show_validation_errors(page: Page):
     validations = modal.locator(".validation:visible")
     expect(validations).to_have_count(2)
     expect(validations.first).to_contain_text("Это обязательное поле")
+
+
+# ===========================================================================
+# Кейс 123: Закрыть поп-ап авторизации кликом вне его области
+# ===========================================================================
+def test_close_auth_popup_by_click_outside(page: Page):
+    """Клик по затемнённой области вне карточки закрывает поп-ап."""
+    open_auth_popup(page)
+
+    modal = page.locator(".modal__authentification__ecom-content").first
+
+    # Кликаем слева от карточки — координаты считаем от неё самой, чтобы тест
+    # не зависел от ширины окна и не попал случайно по самой карточке.
+    box = modal.bounding_box()
+    page.mouse.click(max(box["x"] / 2, 10), box["y"] + box["height"] / 2)
+
+    expect(page.locator(".modal__authentification__ecom-content")).to_have_count(0)
+
+
+# ===========================================================================
+# Кейс 124: Маска пароля
+# ===========================================================================
+def test_password_is_masked(page: Page):
+    """Пароль вводится скрытым: type=password, но значение сохраняется целиком."""
+    open_auth_popup(page)
+
+    modal = page.locator(".modal__authentification__ecom-content").first
+    password = modal.locator('input[type="password"]').first
+
+    # По умолчанию поле скрывает ввод
+    expect(password).to_have_attribute("type", "password")
+
+    secret = "SecretPass123!"
+    password.fill(secret)
+
+    # Символы не показываются — атрибут type не переключился сам по себе
+    expect(password).to_have_attribute("type", "password")
+    # ...но введённое значение не искажено маской
+    expect(password).to_have_value(secret)
+
+
+# ===========================================================================
+# Кейс 125: Показать / скрыть пароль
+# ===========================================================================
+def test_toggle_password_visibility(page: Page):
+    """Иконка глаза переключает пароль между скрытым и видимым."""
+    open_auth_popup(page)
+
+    modal = page.locator(".modal__authentification__ecom-content").first
+    password = modal.locator('input[placeholder="********"]').first
+    eye = modal.locator("button.show__password").first
+
+    password.fill("SecretPass123!")
+    expect(password).to_have_attribute("type", "password")
+
+    # Клик по глазу — пароль виден
+    eye.click()
+    expect(password).to_have_attribute("type", "text")
+
+    # Повторный клик — снова скрыт
+    eye.click()
+    expect(password).to_have_attribute("type", "password")
+
+    # Значение при переключениях не потерялось
+    expect(password).to_have_value("SecretPass123!")
+
+
+# ===========================================================================
+# Кейс 127: Переход к восстановлению пароля
+# ===========================================================================
+def test_go_to_password_recovery(page: Page):
+    """«Забыли пароль? Восстановить» открывает форму восстановления."""
+    open_auth_popup(page)
+
+    modal = page.locator(".modal__authentification__ecom-content").first
+
+    # В поп-апе два блока-подсказки (восстановление и регистрация) — берём
+    # кнопку по тексту, а не по позиции.
+    modal.get_by_role("button", name="Забыли пароль? Восстановить").click()
+
+    # Открылась форма восстановления: заголовок, пояснение и поле email
+    recovery = page.locator(".modal__authentification__ecom-content").first
+    expect(recovery.locator("h2")).to_contain_text("Восстановление пароля")
+    expect(recovery).to_contain_text("адрес электронной почты")
+    expect(
+        recovery.locator('input[placeholder="Введи e-mail адрес"]')
+    ).to_be_visible()
+
+    # Поля пароля больше нет — это уже другая форма, а не прежняя авторизация
+    expect(recovery.locator('input[type="password"]')).to_have_count(0)
