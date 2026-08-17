@@ -412,3 +412,96 @@ def test_price_filter_narrows_results(page: Page):
     assert count_after <= count_before, (
         f"После сужения цены выдача выросла: {count_before} → {count_after}"
     )
+
+
+# ===========================================================================
+# 9. Прайс-фильтр: цены в выдаче реально попадают в заданный интервал
+# ===========================================================================
+def _visible_prices_bani(page: Page) -> list[int]:
+    """Цены видимых товаров В БАНАХ (товары без стока пропускаем).
+
+    Без стока в карточке вообще нет блока `.product__prices` — цена не
+    отображается (проверено вживую, подтверждено владельцем стенда), так что
+    проверять по ним попадание в интервал нечего.
+
+    Считаем в банах: на витрине соседствуют «1 899 MDL» и «1 529.15 MDL», и
+    наивное «вырезать всё, кроме цифр» даёт 1899 и 152915 — числа из разных
+    масштабов, сравнивать их с границей фильтра бессмысленно.
+    """
+    return page.evaluate(
+        """() => {
+            const toBani = (text) => {
+                const m = (text || '').match(/([\\d\\s.,]+)\\s*MDL/);
+                if (!m) return null;
+                const v = parseFloat(m[1].replace(/\\s/g, '').replace(',', '.'));
+                return isNaN(v) ? null : Math.round(v * 100);
+            };
+            return [...document.querySelectorAll('.product__items .product__item')]
+                .filter(c => !c.querySelector('.product__out-of-stock-label'))
+                .map(c => {
+                    const el = c.querySelector(
+                        '.product__prices .price:not(.old__price):not(.discount-value)'
+                    );
+                    return el ? toBani(el.textContent) : null;
+                })
+                .filter(v => v != null);
+        }"""
+    )
+
+
+def _commit_price_input(page: Page, field: Locator, value: str) -> None:
+    """Вписать значение в поле цены и зафиксировать его.
+
+    Фильтр применяется только по native blur, поэтому: реальный фокус кликом
+    → ввод → Tab. Паузы между шагами обязательны, иначе debounce v-model
+    заглатывает изменение (та же механика, что в тесте выше).
+    """
+    field.click()
+    page.wait_for_timeout(300)
+    field.fill(value)
+    page.wait_for_timeout(500)
+    field.press("Tab")
+    page.wait_for_timeout(2_000)
+
+
+def test_price_filter_keeps_prices_within_range(page: Page):
+    """Задать интервал цен — все товары в выдаче попадают в этот интервал.
+
+    Прошлая проверка прайс-фильтра смотрела только на СЧЁТЧИК («не вырос»).
+    Такой ассерт проходит и в случае, когда фильтр просто игнорируется частью
+    товаров: количество не растёт, а в выдаче лежат товары дороже максимума.
+    Здесь сверяем сами цены.
+    """
+    inputs = _sidebar(page).locator(PRICE_INPUTS)
+    if not _present(inputs, 2):
+        pytest.skip("На этой категории нет полей ценового фильтра")
+
+    prices_before = _visible_prices_bani(page)
+    if len(prices_before) < 3:
+        pytest.skip("Слишком мало товаров с ценой, чтобы резать интервал")
+
+    # Интервал строим от реальных цен категории, а не от круглых чисел:
+    # иначе на одной категории он пустой, на другой — не сужает ничего.
+    lo, hi = min(prices_before), max(prices_before)
+    min_mdl = (lo + (hi - lo) // 4) // 100
+    max_mdl = (hi - (hi - lo) // 4) // 100
+    if min_mdl >= max_mdl:
+        pytest.skip(f"Цены категории слишком близки: {lo}-{hi} бань")
+
+    _commit_price_input(page, inputs.first, str(min_mdl))
+    _commit_price_input(page, inputs.last, str(max_mdl))
+    page.wait_for_function(
+        "() => location.search.includes('filters=price')", timeout=15_000
+    )
+    _wait_after_filter(page)
+
+    prices_after = _visible_prices_bani(page)
+    if not prices_after:
+        pytest.skip(f"В интервал {min_mdl}-{max_mdl} MDL не попал ни один товар")
+
+    lo_bani, hi_bani = min_mdl * 100, max_mdl * 100
+    out_of_range = [p for p in prices_after if p < lo_bani or p > hi_bani]
+    assert not out_of_range, (
+        f"В выдаче есть товары вне интервала {min_mdl}-{max_mdl} MDL: "
+        f"{[p / 100 for p in out_of_range]} (все цены: {[p / 100 for p in prices_after]})"
+    )

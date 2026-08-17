@@ -2,8 +2,15 @@
 
 Проверяют контрол сортировки (.sorting-bar): выбор опции меняет URL (`sort=`),
 меняет порядок товаров, сбрасывает пагинацию на первую страницу и сохраняется
-после перезагрузки. Корректность направления проверяется на сортировке по цене
-(по возрастанию).
+после перезагрузки. Корректность самого ПОРЯДКА проверяется на четырёх
+опциях: цена по возрастанию и по убыванию, название по алфавиту и в обратном
+порядке. «По умолчанию», «Popular» и «Mai nou» не проверяются по существу —
+ожидаемый порядок для них задаётся бэкендом и из вёрстки не выводится.
+
+Особенность стенда: на свежей сессии в списке уже отмечена опция «по убыванию
+цены», хотя кнопка показывает «Sortare», а `sort=` в URL нет. Повторный выбор
+той же опции приложение считает пустым действием — см. комментарий в тесте
+про убывание цены.
 
 URL категории передаётся через `CATEGORY_URL` (по умолчанию `/ro/jbl-tune`).
 
@@ -46,7 +53,13 @@ ACTIVE_BUTTON = ".pagination__button.active"
 NEXT_BUTTON = f"{PAGE_BUTTON}:has(.pagination__button-arrow--next)"
 
 # Подписи опций (ro). Меняются при смене языка интерфейса.
-SORT_LOWEST_PRICE = "De la cel mai mic preț"   # по возрастанию цены
+# Полный список на стенде: În mod implicit / Popular / Mai nou /
+# De la cel mai mic preț / De la cel mai mare preț / După denumire /
+# După denumire invers.
+SORT_LOWEST_PRICE = "De la cel mai mic preț"    # по возрастанию цены
+SORT_HIGHEST_PRICE = "De la cel mai mare preț"  # по убыванию цены
+SORT_BY_NAME = "După denumire"                  # по названию, А→Я
+SORT_BY_NAME_DESC = "După denumire invers"      # по названию, Я→А
 
 
 # ---------------------------------------------------------------------------
@@ -65,19 +78,49 @@ def _sort_param(page: Page) -> str | None:
 
 
 def _in_stock_prices(page: Page) -> list[int]:
-    """Цены товаров в наличии (out-of-stock и без цены пропускаем)."""
+    """Цены товаров в наличии, В БАНАХ (out-of-stock пропускаем).
+
+    Товары без стока исключаем не для удобства: у них в разметке вообще нет
+    блока `.product__prices` — цена не отображается (проверено вживую
+    2026-08-17), так что сравнивать по ним нечего.
+
+    Цену читаем из `.product__prices .price`, исключая старую цену и процент
+    скидки. Раньше здесь стоял `.no-discount` — такого класса на листинге НЕТ
+    ни одного, функция всегда возвращала пустой список, и проверка порядка
+    цен сравнивала `[] == sorted([])`, то есть не проверяла ничего.
+
+    Считаем в банах: цены на витрине смешанного формата — «1 899 MDL» и
+    «2 379.15 MDL». Наивный `parseInt` после вырезания нецифр даёт 1899 и
+    237915, и сравнение таких чисел между собой бессмысленно.
+    """
     return page.evaluate(
         """() => {
+            const toBani = (text) => {
+                const m = (text || '').match(/([\\d\\s.,]+)\\s*MDL/);
+                if (!m) return null;
+                const v = parseFloat(m[1].replace(/\\s/g, '').replace(',', '.'));
+                return isNaN(v) ? null : Math.round(v * 100);
+            };
             return [...document.querySelectorAll('.product__items .product__item')]
                 .filter(c => !c.querySelector('.product__out-of-stock-label'))
                 .map(c => {
-                    const n = c.querySelector('.product__prices .no-discount');
-                    if (!n) return null;
-                    const v = parseInt(n.textContent.replace(/[^\\d]/g, ''));
-                    return isNaN(v) ? null : v;
+                    const el = c.querySelector(
+                        '.product__prices .price:not(.old__price):not(.discount-value)'
+                    );
+                    return el ? toBani(el.textContent) : null;
                 })
                 .filter(v => v != null);
         }"""
+    )
+
+
+def _card_names(page: Page) -> list[str]:
+    """Названия товаров в порядке отрисовки."""
+    return page.evaluate(
+        """() => [...document.querySelectorAll(
+                '.product__items .product__item .product__name')]
+            .map(n => n.textContent.trim())
+            .filter(Boolean)"""
     )
 
 
@@ -250,6 +293,70 @@ def test_sort_lowest_price_orders_ascending(page: Page):
 
     assert prices == sorted(prices), (
         f"Цены не по возрастанию при сортировке «по возрастанию цены»: {prices}"
+    )
+
+
+# ===========================================================================
+# 3b. Сортировка по убыванию цены реально сортирует по убыванию
+# ===========================================================================
+def test_sort_highest_price_orders_descending(page: Page):
+    """«De la cel mai mare preț» → цены товаров в наличии идут по убыванию.
+
+    Сначала уводим сортировку на возрастание. Причина: на свежей сессии в
+    списке УЖЕ отмечена опция «по убыванию цены» (`span.selected`), хотя
+    кнопка показывает «Sortare», а `sort=` в URL нет. Выбор той же опции
+    приложение считает пустым действием — URL не меняется, и ожидание
+    `sort=` в `_pick_sort` висит до таймаута (поймано на первом прогоне).
+    Заодно проверяем сам переход возрастание → убывание.
+    """
+    _pick_sort(page, SORT_LOWEST_PRICE)
+    _pick_sort(page, SORT_HIGHEST_PRICE)
+
+    prices = _in_stock_prices(page)
+    if len(prices) < 2:
+        pytest.skip("Меньше двух товаров в наличии с ценой — порядок не проверить")
+
+    assert prices == sorted(prices, reverse=True), (
+        f"Цены не по убыванию при сортировке «по убыванию цены»: {prices}"
+    )
+
+
+# ===========================================================================
+# 3c. Сортировка по названию реально сортирует по алфавиту
+# ===========================================================================
+def test_sort_by_name_orders_alphabetically(page: Page):
+    """«După denumire» → названия товаров идут по алфавиту.
+
+    Сравниваем без учёта регистра: на бэкенде сортировка идёт средствами БД,
+    а там сравнение обычно регистронезависимое. Регистрозависимая проверка
+    ловила бы не баг продукта, а расхождение правил сравнения.
+    """
+    _pick_sort(page, SORT_BY_NAME)
+
+    names = _card_names(page)
+    if len(names) < 2:
+        pytest.skip("Меньше двух товаров в выдаче — порядок не проверить")
+
+    keys = [n.casefold() for n in names]
+    assert keys == sorted(keys), (
+        f"Названия не по алфавиту при сортировке «по названию»: {names}"
+    )
+
+
+# ===========================================================================
+# 3d. Сортировка по названию в обратном порядке
+# ===========================================================================
+def test_sort_by_name_reversed_orders_backwards(page: Page):
+    """«După denumire invers» → названия идут в обратном алфавитном порядке."""
+    _pick_sort(page, SORT_BY_NAME_DESC)
+
+    names = _card_names(page)
+    if len(names) < 2:
+        pytest.skip("Меньше двух товаров в выдаче — порядок не проверить")
+
+    keys = [n.casefold() for n in names]
+    assert keys == sorted(keys, reverse=True), (
+        f"Названия не в обратном алфавитном порядке: {names}"
     )
 
 
