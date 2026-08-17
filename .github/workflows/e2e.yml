@@ -5,7 +5,24 @@ name: E2E Tests (stage.ecom.md)
 on:
   schedule:
     - cron: "0 2 * * *"          # каждую ночь ~02:00 UTC (~05:00 Кишинёв)
-  workflow_dispatch: {}           # ручной запуск кнопкой в Actions
+  # Ручной запуск кнопкой в Actions. Параметры нужны, чтобы можно было
+  # ПЕРЕПРОВЕРИТЬ кабинет в CI, не редактируя этот файл: блокировка логина с
+  # IP GitHub — наблюдение, а не закон природы, и она может отвалиться.
+  # Дефолты повторяют ночной прогон один в один, так что cron не меняется.
+  workflow_dispatch:
+    inputs:
+      markers:
+        description: 'Выражение -m (дефолт: кабинет исключён)'
+        default: 'not requires_auth'
+        required: false
+      paths:
+        description: 'Ограничить прогон путями (пусто = вся суита)'
+        default: ''
+        required: false
+      k_filter:
+        description: 'Фильтр -k по именам тестов (пусто = без фильтра)'
+        default: ''
+        required: false
   # Полную суиту по каждому пушу не гоняем (долго + флаки под нагрузкой) —
   # на пуш работает быстрый smoke (.github/workflows/smoke.yml).
 
@@ -95,11 +112,18 @@ jobs:
       # проверяют по-настоящему. Вернуть в CI можно, когда появится runner с
       # молдавским IP (self-hosted / прокси) — тогда просто убрать этот флаг.
       - name: Run E2E tests (headed via Xvfb)
+        env:
+          # Для cron/расписания inputs пустой — подставляем ночной дефолт.
+          MARKERS: ${{ inputs.markers || 'not requires_auth' }}
+          PATHS: ${{ inputs.paths }}
+          K_FILTER: ${{ inputs.k_filter }}
         run: |
-          echo "Кабинет (-m requires_auth) исключён: stage не пускает в аккаунт с IP GitHub Actions"
+          echo "Маркеры: -m \"$MARKERS\"${PATHS:+ | пути: $PATHS}${K_FILTER:+ | -k $K_FILTER}"
           xvfb-run --auto-servernum \
             pytest --headed --browser chromium \
-                   -m "not requires_auth" \
+                   -m "$MARKERS" \
+                   ${PATHS} \
+                   ${K_FILTER:+-k "$K_FILTER"} \
                    --reruns 1 \
                    --timeout=120 \
                    --session-timeout=5400 \
