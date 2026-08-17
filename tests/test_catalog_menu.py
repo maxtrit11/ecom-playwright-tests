@@ -289,3 +289,51 @@ def test_background_scroll_disabled_when_menu_open(page: Page):
         f"Фоновый скролл не заблокирован: overflow={overflow}, "
         f"scroll before={scroll_before}, after={scroll_after}"
     )
+
+
+# ===========================================================================
+# Кейс 21: Хлебные крошки — переход на прошлую страницу
+# ===========================================================================
+BREADCRUMB_ITEM = ".breadcrumb__items .breadcrumb__item"
+
+
+def test_breadcrumb_navigates_to_parent_page(page: Page, in_stock_product: str):
+    """Клик по предыдущей крошке возвращает на родительскую страницу.
+
+    Берём страницу товара, а не подкатегории: там цепочка из трёх звеньев
+    (Главная → категория → товар), и «прошлая страница» — это именно категория.
+    У подкатегории звеньев два, и тест сводился бы к переходу на главную,
+    то есть проверял бы обычную ссылку, а не работу крошек.
+    """
+    page.goto(in_stock_product, wait_until="domcontentloaded", timeout=60_000)
+    expect(page.locator("h1")).to_be_visible(timeout=15_000)
+
+    items = page.locator(BREADCRUMB_ITEM)
+    expect(items.first).to_be_visible(timeout=10_000)
+    depth_before = items.count()
+    assert depth_before >= 3, (
+        f"В крошках {depth_before} звена — родительской страницы нет, "
+        f"проверять переход не на что"
+    )
+
+    # Последнее звено — текущая страница (span без ссылки), поэтому родитель —
+    # это последняя ССЫЛКА в цепочке.
+    links = items.locator("a")
+    parent = links.nth(links.count() - 1)
+    parent_text = parent.inner_text().strip()
+    parent_href = parent.get_attribute("href")
+
+    parent.click()
+
+    # Перешли именно на страницу из крошки
+    expect(page).to_have_url(re.compile(re.escape(parent_href) + r"/?$"), timeout=15_000)
+    # Заголовок открытой страницы совпадает с текстом крошки (регистр другой —
+    # в крошках он поднят капсом через CSS)
+    expect(page.locator("h1")).to_have_text(
+        re.compile(re.escape(parent_text), re.IGNORECASE), timeout=15_000
+    )
+
+    # Цепочка укоротилась на одно звено — мы поднялись на уровень выше
+    expect(page.locator(BREADCRUMB_ITEM)).to_have_count(
+        depth_before - 1, timeout=10_000
+    )

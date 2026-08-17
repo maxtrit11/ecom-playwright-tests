@@ -5,8 +5,8 @@
   Подтверждение действия — через счётчик в шапке и active-стиль кнопки.
 - У товара с коротким описанием кнопка «Читать больше» не показывается —
   кейсы 77/78 корректно скипаются.
-- Lightbox при клике на главное фото не открывается — Кейс 76 проверяет,
-  что клик на мини-фото переключает основное фото в слайдере.
+- Lightbox при клике на главное фото ОТКРЫВАЕТСЯ (Fancybox) — проверено
+  вживую 2026-08-17, см. Кейс 68. Прежняя заметка «не открывается» устарела.
 """
 
 import re
@@ -48,6 +48,12 @@ HEADER_CART_BTN = "button.btn__action.btn__cart"       # «Корзина / 6 99
 
 # Галерея фото
 GALLERY_THUMBS = ".slider__thumbs.newType"
+# Слайдер фото: и мини-фото, и главное фото лежат в одинаковых `.slider__image`,
+# отличаются только размером — главное берём по ширине (см. `_main_slider_image`).
+SLIDER_IMAGE = ".product__slider .slider__image"
+# Лайтбокс полноразмерного фото — Fancybox
+LIGHTBOX = ".fancybox__container"
+LIGHTBOX_IMAGE = f"{LIGHTBOX} img.fancybox-image"
 
 # Попапы (точные селекторы найдены через MCP)
 MODAL_CREDIT = ".modal__credit.show"
@@ -207,6 +213,62 @@ def test_thumbs_gallery_has_multiple_photos(page: Page):
     thumb_imgs = thumbs.locator("img")
     count = thumb_imgs.count()
     assert count > 1, f"В галерее мини-фото только {count} картинка"
+
+
+# ===========================================================================
+# Кейс 68: Открытие изображения в полном размере
+# ===========================================================================
+def _main_slider_image(page: Page):
+    """Главное (большое) фото товара в слайдере.
+
+    Отдельного класса у него нет: мини-фото и главное фото — одинаковые
+    `.slider__image`, поэтому берём первое достаточно широкое. Индекс тут
+    зашивать нельзя — он зависит от числа мини-фото у конкретного товара.
+    """
+    images = page.locator(SLIDER_IMAGE)
+    expect(images.first).to_be_visible(timeout=15_000)
+
+    for i in range(images.count()):
+        box = images.nth(i).bounding_box()
+        if box and box["width"] > 250:
+            return images.nth(i)
+
+    pytest.skip("У товара нет крупного фото в слайдере — открывать нечего")
+
+
+def test_open_image_full_size(page: Page):
+    """Клик по главному фото открывает его во весь экран и увеличивает.
+
+    Лайтбокс на сайте — Fancybox (`.fancybox__container`). Раньше в шапке
+    файла было записано, что при клике на фото лайтбокс НЕ открывается;
+    на текущем стенде открывается, проверено вживую 2026-08-17.
+    """
+    main_image = _main_slider_image(page)
+    inline_width = main_image.bounding_box()["width"]
+
+    main_image.click()
+
+    lightbox = page.locator(LIGHTBOX)
+    expect(lightbox).to_be_visible(timeout=10_000)
+
+    # Фото открылось именно В ПОЛНОМ РАЗМЕРЕ — оно шире, чем было на странице
+    full_image = page.locator(LIGHTBOX_IMAGE).first
+    expect(full_image).to_be_visible(timeout=10_000)
+    full_width = full_image.bounding_box()["width"]
+    assert full_width > inline_width, (
+        f"Фото в лайтбоксе не крупнее, чем на странице: "
+        f"{full_width}px против {inline_width}px"
+    )
+
+    # Затемнение фона и заблокированный скролл — признак модального режима
+    expect(page.locator(f"{LIGHTBOX} .fancybox__backdrop")).to_be_visible()
+    expect(page.locator("body")).to_have_css("overflow", "hidden")
+
+    # Escape закрывает просмотр и возвращает страницу в рабочее состояние
+    page.keyboard.press("Escape")
+    expect(lightbox).to_have_count(0, timeout=10_000)
+    expect(page.locator("body")).to_have_css("overflow", "visible", timeout=10_000)
+    expect(page.locator(H1)).to_be_visible()
 
 
 # ===========================================================================

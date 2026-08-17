@@ -14,9 +14,14 @@ PRODUCT_URL = "/ru/product/jbl-partybox-on-the-go-2"
 BTN_OPEN = "button.btn-one-click, button.btn__buy_click"
 
 MODAL = ".modal__buy_onclick.show"
+# Белая карточка внутри модалки: сам MODAL — это затемнённый оверлей на весь
+# экран, и клик «мимо поп-апа» считается от границ именно карточки.
+MODAL_CARD = f"{MODAL} .buy__onclick_content"
 BTN_CLOSE = f"{MODAL} .btn__close"
 INPUT_TEL = f'{MODAL} input[type="tel"]'
 BTN_SUBMIT = f"{MODAL} button.request"
+# Телефон магазина в сайдбаре поп-апа — обычная tel-ссылка
+LINK_PHONE = f"{MODAL} a.item__phone"
 
 SUCCESS_MODAL = ".modal__checkout_success.show"
 
@@ -69,6 +74,66 @@ def test_close_one_click_popup_by_x(open_one_click_popup: Page):
 
     expect(page.locator(MODAL)).not_to_be_visible(timeout=5_000)
     expect(page.locator("h1")).to_be_visible()
+
+
+# ===========================================================================
+# Кейс 109: Закрыть поп-ап кликом по любой области вокруг него
+# ===========================================================================
+def test_close_one_click_popup_by_click_outside(open_one_click_popup: Page):
+    """Клик по затемнению вокруг карточки закрывает поп-ап."""
+    page = open_one_click_popup
+
+    # Координаты считаем от карточки: так тест не зависит от ширины окна и
+    # гарантированно попадает в оверлей, а не в саму карточку.
+    box = page.locator(MODAL_CARD).bounding_box()
+    page.mouse.click(max(box["x"] / 2, 10), box["y"] + box["height"] / 2)
+
+    expect(page.locator(MODAL)).to_have_count(0, timeout=10_000)
+    # Страница товара снова рабочая: скролл разблокирован
+    expect(page.locator("body")).to_have_css("overflow", "visible", timeout=10_000)
+    expect(page.locator("h1")).to_be_visible()
+
+
+# ===========================================================================
+# Кейс 110: Нажатие на номер телефона в поп-апе
+# ===========================================================================
+def test_shop_phone_is_tel_link(open_one_click_popup: Page):
+    """Номер магазина — рабочая tel-ссылка, и клик по ней не ломает поп-ап.
+
+    Сам системный диалог («Открыть приложение для звонка?») рисует ОС, а не
+    страница — Playwright его не видит и проверить не может. Поэтому
+    проверяем то, от чего этот диалог зависит и что реально может сломаться:
+    ссылка имеет протокол `tel:`, номер в href совпадает с показанным на
+    экране, а клик не уводит со страницы и не закрывает поп-ап.
+    """
+    page = open_one_click_popup
+
+    phone = page.locator(LINK_PHONE)
+    expect(phone).to_be_visible(timeout=10_000)
+
+    href = phone.get_attribute("href")
+    assert href.replace(" ", "").startswith("tel:"), (
+        f"Номер оформлен не как tel-ссылка: href={href!r}"
+    )
+
+    # Номер в ссылке и на экране — один и тот же (сравниваем только цифры:
+    # на экране он разбит пробелами, в href — нет)
+    href_digits = re.sub(r"\D", "", href)
+    shown_digits = re.sub(r"\D", "", phone.inner_text())
+    assert href_digits == shown_digits, (
+        f"Номер в ссылке не совпадает с показанным: {href_digits} против {shown_digits}"
+    )
+    assert len(href_digits) >= 8, f"Номер выглядит неполным: {href_digits}"
+
+    url_before = page.url
+    phone.click()
+    page.wait_for_timeout(2_000)
+
+    # Обработку tel: забирает ОС — страница остаётся на месте, поп-ап открыт
+    assert page.url == url_before, (
+        f"Клик по телефону увёл со страницы: {url_before} → {page.url}"
+    )
+    expect(page.locator(MODAL)).to_be_visible()
 
 
 # ===========================================================================
