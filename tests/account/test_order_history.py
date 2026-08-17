@@ -58,6 +58,19 @@ FAV_FILTER_LABEL = "Избранные заказы"
 FAV_FILTER_ONLY = "Показать только избранные"
 FAV_FILTER_ALL = "Показать все"
 
+# Повтор заказа (кейс 164)
+BTN_REPEAT_ORDER = "Повторить заказ"
+# Товары внутри модалки деталей заказа
+ORDER_DETAILS_PRODUCT = ".modal__authentification__ecom-content-order-products-item"
+# Тост «Товар был добавлен в корзину» — то же семейство, что у избранного
+CART_NOTIFICATION = ".notification.cart.show"
+# Корзина. В шапке ДВЕ кнопки корзины (мобильная и десктопная), мобильная
+# скрыта — без `:visible` клик уходит в невидимую и висит до таймаута.
+HEADER_CART_BTN = "button.btn__action.btn__cart:visible"
+CART_MODAL = ".modal__cart"
+CART_PRODUCT = ".cart__product"
+BTN_CLEAR_CART = "button.cart-products__header__clear-btn"
+
 # Sidebar
 SIDEBAR = ".account-sidebar"
 SIDEBAR_ITEM = ".account-sidebar__list__item"
@@ -456,3 +469,84 @@ def test_favorite_filter_shows_only_favorites(page: Page):
         current = page.locator(ORDER_ROW).filter(has_text=order_no).first
         if current.count() and is_favorite(current):
             toggle_favorite(page, current, expect_active=False)
+
+
+# ===========================================================================
+# Кейс 164: История заказов — повторить заказ
+# ===========================================================================
+def open_cart(page: Page):
+    """Открыть корзину из шапки и вернуть локатор дровера."""
+    page.locator(HEADER_CART_BTN).first.click()
+    cart = page.locator(CART_MODAL)
+    expect(cart).to_be_visible(timeout=15_000)
+    return cart
+
+
+def empty_the_cart(page: Page) -> None:
+    """Очистить корзину, если в ней что-то есть, и закрыть дровер.
+
+    Учётка на stage общая, и в корзине почти всегда лежит мусор от прошлых
+    прогонов. Без очистки проверка «в корзине товары из заказа» ничего не
+    доказывает: они могли быть там и до нажатия «Повторить заказ».
+    """
+    cart = open_cart(page)
+
+    if page.locator(CART_PRODUCT).count():
+        clear_btn = page.locator(BTN_CLEAR_CART).first
+        expect(clear_btn).to_be_visible(timeout=10_000)
+        clear_btn.click()
+        expect(page.locator(CART_PRODUCT)).to_have_count(0, timeout=15_000)
+
+    cart.locator(".btn__close").first.click()
+    expect(page.locator(f"{CART_MODAL}.show")).to_have_count(0, timeout=15_000)
+
+
+def open_order_details(page: Page):
+    """Открыть детали первого заказа («глаз») и вернуть модалку."""
+    rows = page.locator(ORDER_ROW)
+    expect(rows.first).to_be_visible(timeout=15_000)
+    rows.first.locator(ORDER_VIEW_BTN).click()
+
+    details = page.locator(".modal__authentification__ecom-content").first
+    expect(details).to_be_visible(timeout=15_000)
+    expect(details.locator(ORDER_DETAILS_PRODUCT).first).to_be_visible(timeout=15_000)
+    return details
+
+
+def test_repeat_order_adds_products_to_cart(page: Page):
+    """«Повторить заказ» кладёт товары заказа в корзину и показывает тост.
+
+    Корзину сначала опустошаем — иначе «товар в корзине» может оказаться
+    остатком прошлого прогона, а не результатом повтора.
+    """
+    empty_the_cart(page)
+
+    details = open_order_details(page)
+
+    # Запоминаем состав заказа — именно эти товары должны появиться в корзине
+    product_names = [
+        name.strip()
+        for name in details.locator(f"{ORDER_DETAILS_PRODUCT} h4").all_inner_texts()
+    ]
+    assert product_names, "В деталях заказа нет товаров — повторять нечего"
+
+    details.get_by_role("button", name=BTN_REPEAT_ORDER).click()
+
+    # 1. Уведомление о добавлении
+    toast = page.locator(CART_NOTIFICATION)
+    expect(toast).to_be_visible(timeout=15_000)
+    expect(toast).to_contain_text(re.compile("добавлен.* в корзину", re.I))
+
+    # 2. Корзина содержит товары из заказа.
+    # Сверяем по НАЗВАНИЯМ, а не по сумме: цена в заказе может быть за упаковку
+    # («6 791.50 MDL /упаковка 10 пар»), а в корзину товар кладётся поштучно —
+    # ассерт на равенство сумм давал бы ложное падение.
+    open_cart(page)
+    expect(page.locator(CART_PRODUCT).first).to_be_visible(timeout=15_000)
+    cart_text = page.locator(CART_MODAL).inner_text()
+
+    for name in product_names:
+        assert name in cart_text, (
+            f"Товара «{name}» из заказа нет в корзине после повтора. "
+            f"В корзине: {cart_text[:300]}"
+        )
