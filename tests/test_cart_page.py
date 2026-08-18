@@ -33,6 +33,7 @@
 """
 
 import re
+import time
 
 import pytest
 from playwright.sync_api import Page, expect
@@ -59,8 +60,29 @@ ORDER_FORM = ".order-form"
 FOOTER = ".order-form__content__footer"
 SUBMIT_AREA = ".order-form__content__footer__submit"
 TERMS_CHECKBOX = ".terms__checkbox"
+# Табы: активный помечается классом `selected` (не `active`).
 DELIVERY_TABS = ".order-form__content__segment__content__tabs .ui-action-tab-btn"
+# Табы оплаты и доставки лежат в одинаковых обёртках, отличаются только
+# подписями — поэтому отбираем по тексту, а не по позиции сегмента.
+ALL_TABS = ".order-form .ui-action-tab-btn"
+RE_PAYMENT = re.compile(r"наличн|кредит|перевод|онлайн", re.I)
 PROMOCODE = ".order-form__content__promocode"
+PROMO_FEEDBACK = ".promo-code-feedback"
+FREE_DELIVERY = ".order-form__free-delivery-info"
+
+# Поля заказа
+INPUT_NAME = 'input[placeholder="Введите имя и фамилию"]'
+INPUT_PHONE = "#phone"
+INPUT_EMAIL = 'input[placeholder="example@email.com"]'
+INPUT_STREET = 'input[placeholder="например: Авиатор"]'
+BTN_PLACE_ORDER = f"{SUBMIT_AREA} button"
+# «Сектор» — обязательный выпадающий список, без него заказ молча не уходит.
+SECTOR_SELECT = '.order-form .ui-select:has(label:text-matches("Сектор", "i"))'
+DROPDOWN_OPTION = ".vs__dropdown-menu li"
+# Незаполненное обязательное поле помечается классом `unvalid` (именно так,
+# не `invalid`) — по нему видно, что именно блокирует оформление.
+INVALID_FIELD = ".unvalid"
+SUCCESS_POPUP = ".checkout__success_content"
 
 # Каталог — откуда кладём товар
 CATEGORY_URL = "/ru/acustica-portabila"
@@ -97,26 +119,23 @@ def only_cart_page_view(require_cart_view):
 
 
 @pytest.fixture
-def cart_with_product(page: Page) -> Page:
-    """Положить товар со стоком в корзину и открыть страницу корзины.
+def cart_with_product(page: Page, in_stock_product: str) -> Page:
+    """Положить товар в корзину и открыть страницу корзины.
 
-    Карточки перебираем: товар «под заказ» уводит в предзаказ и корзина
-    остаётся пустой — на этом уже спотыкались при съёмке разметки.
+    Товар берём фикстурой `in_stock_product`: она подтверждает остаток по
+    `__NUXT__`, а не по наличию цены и кнопки. Разница принципиальна — у
+    товара «под заказ» цена и кнопка «В корзину» на месте, но заказ с ним не
+    оформляется, и тест оформления падал бы с невнятным «нет подтверждения».
     """
     page.set_viewport_size({"width": 1920, "height": 1080})
-    page.goto(CATEGORY_URL, wait_until="domcontentloaded", timeout=60_000)
-    expect(page.locator(CARD).first).to_be_visible(timeout=30_000)
+    page.context.clear_cookies()
 
-    cards = page.locator(f"{CARD}:has({CARD_PRICES}):has({BTN_ADD_CART})")
-    added = False
-    for i in range(min(cards.count(), 8)):
-        cards.nth(i).locator(BTN_ADD_CART).click()
-        page.wait_for_timeout(2000)
-        if "MDL" in (page.locator(HEADER_CART_BTN).first.inner_text() or ""):
-            added = True
-            break
-    if not added:
-        pytest.skip("Не удалось положить в корзину ни один товар из категории")
+    page.goto(in_stock_product, wait_until="domcontentloaded", timeout=60_000)
+    expect(page.locator("h1")).to_be_visible(timeout=20_000)
+    add = page.locator(BTN_ADD_CART).first
+    expect(add).to_be_visible(timeout=20_000)
+    add.click()
+    page.wait_for_timeout(1500)
 
     page.goto(CART_URL, wait_until="domcontentloaded", timeout=60_000)
     expect(page.locator(f"{ROW}").first).to_be_visible(timeout=30_000)
@@ -263,6 +282,77 @@ def test_order_totals_are_consistent(cart_with_product: Page):
     )
 
 
+def test_payment_method_tabs_switch(cart_with_product: Page):
+    """Способ оплаты переключается табами.
+
+    Проверяем только переключение: реально оформляем заказ наличными, потому
+    что онлайн-оплата потребовала бы настоящую карту.
+    """
+    page = cart_with_product
+    tabs = page.locator(ALL_TABS).filter(has_text=RE_PAYMENT)
+    if tabs.count() < 2:
+        pytest.skip("На форме меньше двух способов оплаты")
+
+    other = tabs.nth(1)
+    label = (other.inner_text() or "").strip()
+    other.click()
+    page.wait_for_timeout(1500)
+    expect(other).to_have_class(re.compile(r"selected"), timeout=15_000)
+
+    cash = tabs.filter(has_text=re.compile("наличны", re.I)).first
+    if cash.count():
+        cash.click()
+        page.wait_for_timeout(1500)
+        expect(cash).to_have_class(re.compile(r"selected"), timeout=15_000), (
+            f"Не удалось вернуться к оплате наличными после выбора «{label}»"
+        )
+
+
+def test_invalid_promocode_shows_error(cart_with_product: Page):
+    """Несуществующий промокод не применяется и показывает ошибку."""
+    page = cart_with_product
+
+    page.locator(f"{PROMOCODE} input").first.fill("QA-NEVERNYJ-KOD-12345")
+    page.locator(f"{PROMOCODE} button").first.click()
+
+    feedback = page.locator(PROMO_FEEDBACK)
+    expect(feedback).to_be_visible(timeout=20_000)
+    expect(feedback).to_contain_text(re.compile(r"купон|промокод|не существ", re.I))
+
+
+def test_free_delivery_threshold_zeroes_delivery(cart_with_product: Page):
+    """При достигнутом пороге бесплатной доставки её стоимость равна нулю.
+
+    Порог показывается как «набрано / порог». Сравниваем эти два числа и
+    смотрим на строку «Доставка» — так тест верен при любой сумме корзины и
+    любом пороге, а не только при сегодняшних цифрах.
+    """
+    page = cart_with_product
+    info = page.locator(FREE_DELIVERY)
+    if not info.count():
+        pytest.skip("На форме нет блока бесплатной доставки")
+
+    amounts = _AMOUNT_RE.findall(info.inner_text())
+    raw = re.findall(r"(\d[\d\s ]*(?:[.,]\d{1,2})?)", info.inner_text())
+    if len(raw) < 2:
+        pytest.skip(f"Не разобрали блок бесплатной доставки: {info.inner_text()!r}")
+
+    collected = _bani(raw[0] + " MDL")
+    threshold = _bani(raw[1] + " MDL")
+    delivery = _footer_amount(page, "Доставка")
+
+    if collected >= threshold:
+        assert delivery == 0, (
+            f"Порог бесплатной доставки достигнут ({collected / 100:.2f} из "
+            f"{threshold / 100:.2f} MDL), но доставка стоит {(delivery or 0) / 100:.2f} MDL"
+        )
+    else:
+        assert delivery and delivery > 0, (
+            f"Порог не достигнут ({collected / 100:.2f} из {threshold / 100:.2f} MDL), "
+            "но доставка бесплатная"
+        )
+
+
 def test_delivery_type_tabs_switch(cart_with_product: Page):
     """Тип доставки выбирается табами, выбранный подсвечивается."""
     page = cart_with_product
@@ -278,3 +368,78 @@ def test_delivery_type_tabs_switch(cart_with_product: Page):
     expect(second).to_have_class(re.compile(r"active|selected|checked"), timeout=15_000), (
         f"Таб «{label}» не отметился активным после клика"
     )
+
+
+# ===========================================================================
+# Оформление заказа. РЕАЛЬНЫЙ САБМИТ — создаёт заявку на стенде (это разрешено).
+#
+# Объявлен ПОСЛЕДНИМ намеренно: pytest идёт по порядку определения, а
+# оформление расходует остаток товара. Если поставить его выше, остальные
+# тесты могут остаться без стока. Ровно так же сделано для Вида 1
+# (test_checkout_block.py::test_place_order_happy_path).
+# ===========================================================================
+def test_place_order_happy_path(cart_with_product: Page):
+    """Заказ наличными с доставкой оформляется, корзина после этого пуста."""
+    page = cart_with_product
+
+    page.locator(INPUT_NAME).first.fill("QA Autotest")
+
+    # Телефон в intl-tel-input: только посимвольный ввод. `fill` проскакивает
+    # мимо маски, и поле остаётся пустым — уже проверено на предзаказе.
+    phone = page.locator(INPUT_PHONE).first
+    phone.click()
+    phone.press_sequentially("79" + str(int(time.time() * 1000))[-6:], delay=60)
+
+    page.locator(INPUT_EMAIL).first.fill(f"qa+{int(time.time())}@example.com")
+
+    # Сектор — ОБЯЗАТЕЛЕН. Без него кнопка остаётся активной, но клик молча
+    # ничего не делает: запрос не уходит вообще, поле лишь подсвечивается
+    # классом `unvalid`. Населённый пункт подставляется сам («мун. Кишинёв»).
+    sector = page.locator(SECTOR_SELECT)
+    if sector.count():
+        sector.locator(".vs__search").first.click()
+        options = page.locator(DROPDOWN_OPTION)
+        expect(options.first).to_be_visible(timeout=15_000)
+        options.first.click()
+        page.wait_for_timeout(1000)
+
+    street = page.locator(INPUT_STREET)
+    if street.count():
+        street.first.fill("ул. Тестовая, д. 1, кв. 1")
+
+    # Наличные и доставка по Кишинёву выбраны по умолчанию — подстраховываемся.
+    cash = page.locator(ALL_TABS).filter(has_text=re.compile("наличны", re.I)).first
+    if cash.count() and "selected" not in (cash.get_attribute("class") or ""):
+        cash.click()
+        page.wait_for_timeout(1000)
+
+    page.locator(TERMS_CHECKBOX).first.check(force=True)
+    page.wait_for_timeout(500)
+
+    # Перед отправкой убеждаемся, что форма считает себя заполненной. Иначе
+    # тест упал бы на «корзина не опустела», хотя настоящая причина — пустое
+    # обязательное поле, и разбираться пришлось бы вслепую.
+    invalid = page.locator(INVALID_FIELD)
+    assert invalid.count() == 0, (
+        "Перед отправкой остались незаполненные обязательные поля: "
+        + ", ".join(
+            (invalid.nth(i).locator("label").first.inner_text() or "").strip()
+            for i in range(min(invalid.count(), 5))
+        )
+    )
+
+    submit = page.locator(BTN_PLACE_ORDER).first
+    submit.scroll_into_view_if_needed()
+    expect(submit).to_be_enabled(timeout=10_000)
+    submit.click()
+
+    # Успех подтверждается попапом с НОМЕРОМ заказа — это признак того, что
+    # заявка реально создана, а не просто очистилась локальная корзина.
+    success = page.locator(SUCCESS_POPUP)
+    expect(success).to_be_visible(timeout=45_000)
+    expect(success).to_contain_text(re.compile(r"успешно оформлен", re.I))
+    assert re.search(r"\d{4,}", success.inner_text()), (
+        f"В подтверждении нет номера заказа: {success.inner_text()!r}"
+    )
+
+    expect(page.locator(ROW)).to_have_count(0, timeout=20_000)
