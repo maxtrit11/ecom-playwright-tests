@@ -7,6 +7,7 @@ stage не пускал в аккаунт с IP GitHub Actions. С 2026-08-17 б
 """
 
 import re
+from datetime import datetime
 
 import pytest
 from playwright.sync_api import Page, expect
@@ -32,12 +33,33 @@ TABLE_LIST = ".account-table__content__table__list"
 ORDER_ROW = ".account-table__content__table__list__row"
 ORDER_ITEM = ".account-table__content__table__list__row__item"
 
-# Фильтры
+# Фильтры.
+#
+# ВНИМАНИЕ (проверено вживую 2026-08-18): блоков `.account-table__filters` ДВА
+# — в первом «Поиск» и «Статус заказа», во втором «Дата заказа», «Компания» и
+# «Избранные заказы». Селектор `.account-table__filters .v-select` попадает
+# ТОЛЬКО в «Компанию»: у неё корень `<v-select class="v-select …">`, а у
+# «Статуса заказа» — тег `<v-select>` БЕЗ этого класса, поэтому по `.v-select`
+# он не находится. Из-за этого тесты статуса и комбинированных фильтров
+# фактически дёргали фильтр компании. Поэтому поля адресуем по их подписи.
 SEARCH_INPUT = ".account-table__filters .g-input input"
-STATUS_SELECT = ".account-table__filters .v-select"
-STATUS_INPUT = ".account-table__filters .vs__search"
+STATUS_FIELD = '.account-table__filters-item:has(label:text-is("Статус заказа"))'
+STATUS_TRIGGER = f"{STATUS_FIELD} input.vs__search"
+DROPDOWN_OPTION = ".vs__dropdown-menu li"
+# Оставлено ради обратной совместимости с тестом компании: это ИМЕННО она.
+COMPANY_SELECT = ".account-table__filters .v-select"
 DATE_PICKER = ".account-table__filters .mx-datepicker"
 DATE_INPUT = ".account-table__filters .mx-input"
+
+# Колонки таблицы: Номер | Дата оформления | Тип доставки | Тип оплаты |
+# Компания | Тип заказа | Статус заказа | Общая сумма | Действия
+COL_NUMBER = 0
+COL_DATE = 1
+COL_STATUS = 6
+
+# «Все заказы» — это сброс фильтра, а не статус: выбирать его для проверки
+# фильтрации бессмысленно.
+STATUS_ANY = "Все заказы"
 
 # Кнопка просмотра деталей заказа — иконка «глаз» (svg.open) в колонке
 # «Действия». Рядом стоят кнопки «избранное» и «скачать PDF», поэтому
@@ -132,6 +154,54 @@ def login_and_open_order_history(page: Page):
     expect(page.locator(TABLE)).to_be_visible(timeout=15_000)
 
 
+# ---------------------------------------------------------------------------
+# Хелперы разбора таблицы
+# ---------------------------------------------------------------------------
+def _orders(page: Page) -> list[dict]:
+    """Заказы из таблицы: номер, дата оформления и статус по каждой строке."""
+    return page.evaluate(
+        """() => [...document.querySelectorAll(
+             '.account-table__content__table__list__row')].map(r => {
+               const c = [...r.querySelectorAll(
+                 '.account-table__content__table__list__row__item')]
+                 .map(e => e.innerText.replace(/\\s+/g, ' ').trim());
+               return {number: c[0], date: c[1], status: c[6]};
+             })"""
+    )
+
+
+def _order_date(value: str):
+    """Дата строки таблицы (`17.08.26`) как `date`."""
+    return datetime.strptime(value.strip(), "%d.%m.%y").date()
+
+
+def _selected_range(page: Page) -> tuple:
+    """Границы выбранного диапазона из поля даты (`2026-07-27 ~ 2026-08-18`)."""
+    raw = page.locator(DATE_INPUT).input_value()
+    parts = [p.strip() for p in raw.split("~")]
+    assert len(parts) == 2, f"Ожидали диапазон вида «дата ~ дата», получили {raw!r}"
+    return tuple(datetime.strptime(p, "%Y-%m-%d").date() for p in parts)
+
+
+def _apply_status(page: Page, wanted: str | None = None) -> str:
+    """Выбрать статус в фильтре «Статус заказа». Возвращает выбранное значение.
+
+    Поле адресуем по подписи: по `.v-select` находится фильтр компании, а не
+    статуса (подробности в комментарии к селекторам).
+    """
+    page.locator(STATUS_TRIGGER).click()
+    options = page.locator(DROPDOWN_OPTION)
+    expect(options.first).to_be_visible(timeout=10_000)
+
+    names = [options.nth(i).inner_text().strip() for i in range(options.count())]
+    target = wanted or next((n for n in names if n != STATUS_ANY), None)
+    assert target in names, f"Статуса {target!r} нет в списке: {names}"
+
+    options.nth(names.index(target)).click()
+    page.wait_for_timeout(2500)
+    return target
+
+
 # ===========================================================================
 # Кейс 283: Отображение страницы «История заказов»
 # ===========================================================================
@@ -188,20 +258,26 @@ def test_search_order_by_product_name(page: Page):
     search = page.locator(SEARCH_INPUT)
     expect(search).to_be_visible(timeout=5_000)
 
-    # Запоминаем количество заказов до поиска
-    rows_before = page.locator(ORDER_ROW).count()
+    # Ищем по номеру РЕАЛЬНО существующего заказа, а не по константе: на стенде
+    # заказы меняются, и зашитый номер рано или поздно перестанет находиться.
+    orders = _orders(page)
+    if not orders:
+        pytest.skip("У учётки нет заказов — искать нечего")
+    target = orders[0]["number"].lstrip("#")
 
-    # Ввести значение в поиск
-    search.fill("184443")
+    search.fill(target)
     search.press("Enter")
-    page.wait_for_timeout(2000)
+    page.wait_for_timeout(2500)
 
-    # После поиска — результаты изменились или остались (если совпадение есть)
-    rows_after = page.locator(ORDER_ROW).count()
-    assert rows_after >= 0  # Может быть 0 или меньше чем было
+    # Раньше здесь стояло `assert rows_after >= 0` — тавтология, истинная
+    # всегда, даже если поиск вообще не работает. Проверяем результат по сути.
+    found = _orders(page)
+    assert found, f"Поиск по номеру существующего заказа {target!r} не нашёл ничего"
 
-    # Убедимся что страница не сломалась
-    expect(page.locator(TABLE)).to_be_visible()
+    numbers = [o["number"].lstrip("#") for o in found]
+    assert all(target in n for n in numbers), (
+        f"В выдаче по запросу {target!r} есть посторонние заказы: {numbers}"
+    )
 
 
 # ===========================================================================
@@ -210,29 +286,30 @@ def test_search_order_by_product_name(page: Page):
 def test_filter_by_order_status(page: Page):
     """Открыть select «Статус заказа», выбрать статус —
     отображаются только заказы с выбранным статусом."""
-    # Открыть v-select (первый — статус заказа, второй — период)
-    vs = page.locator(STATUS_SELECT).first
-    expect(vs).to_be_visible(timeout=5_000)
-    vs.click()
-    page.wait_for_timeout(500)
+    # Прежняя версия открывала `.account-table__filters .v-select` — это фильтр
+    # КОМПАНИИ, а не статуса (см. комментарий к селекторам), и проверяла лишь
+    # что таблица не исчезла. Работаем с настоящим полем «Статус заказа».
+    expect(page.locator(STATUS_FIELD)).to_be_visible(timeout=10_000)
 
-    # Ищем опции в выпадающем списке
-    options = page.locator(".vs__dropdown-menu li, .vs__dropdown-option")
-    expect(options.first).to_be_visible(timeout=5_000)
-    assert options.count() > 0
+    # Берём статус СУЩЕСТВУЮЩЕГО заказа, а не первый из списка. Иначе легко
+    # выбрать статус, которого у учётки нет (например «Предзаказ» — проверено,
+    # даёт 0 строк), и проверка «все строки нужного статуса» станет
+    # тавтологией на пустой выдаче.
+    orders = _orders(page)
+    if not orders:
+        pytest.skip("У учётки нет заказов — фильтровать нечего")
+    status = _apply_status(page, orders[0]["status"])
 
-    # Выбрать первый статус
-    first_option_text = options.first.text_content().strip()
-    options.first.click()
-    page.wait_for_timeout(2000)
-
-    # Фильтр применился — проверяем что выбранное значение отображается
-    selected = page.locator(".vs__selected")
-    if selected.count() > 0:
-        expect(selected).to_be_visible()
-
-    # Таблица не сломалась
-    expect(page.locator(TABLE)).to_be_visible()
+    filtered = _orders(page)
+    assert filtered, (
+        f"Фильтр по статусу «{status}» очистил выдачу, хотя заказы с таким "
+        f"статусом есть (например {orders[0]['number']})"
+    )
+    wrong = [o for o in filtered if o["status"] != status]
+    assert not wrong, (
+        f"После фильтра по статусу «{status}» в выдаче остались заказы с другими "
+        "статусами: " + ", ".join(f"{o['number']}/{o['status']}" for o in wrong[:5])
+    )
 
 
 # ===========================================================================
@@ -241,25 +318,34 @@ def test_filter_by_order_status(page: Page):
 def test_filter_by_order_date(page: Page):
     """Нажать на поле «Дата заказа», выбрать дату —
     отображаются заказы за выбранную дату/диапазон."""
-    date_picker = page.locator(DATE_PICKER)
-    expect(date_picker).to_be_visible(timeout=5_000)
+    expect(page.locator(DATE_PICKER)).to_be_visible(timeout=5_000)
 
-    date_input = page.locator(DATE_INPUT)
-    date_input.click()
-    page.wait_for_timeout(500)
-
-    # Должен открыться календарь
+    page.locator(DATE_INPUT).click()
     calendar = page.locator(".mx-datepicker-main").first
-    expect(calendar).to_be_visible(timeout=5_000)
+    expect(calendar).to_be_visible(timeout=10_000)
 
-    # Выбираем сегодняшний день (или любую ячейку)
-    day_cell = page.locator(".mx-table-date td.cell:not(.disabled)").first
-    if day_cell.count() > 0 and day_cell.is_visible():
-        day_cell.click()
-        page.wait_for_timeout(1000)
+    # Поле работает как ДИАПАЗОН (mx-datepicker-range): нужно два клика —
+    # начало и конец. После одного календарь остаётся открытым и фильтр не
+    # применяется, поэтому прежняя версия теста по сути ничего не выбирала.
+    cells = page.locator(".mx-table-date td.cell:not(.disabled)")
+    expect(cells.first).to_be_visible(timeout=10_000)
+    assert cells.count() >= 2, "В календаре нет двух доступных дат — диапазон не выбрать"
+    cells.first.click()
+    cells.last.click()
+    page.wait_for_timeout(2500)
 
-    # Таблица не сломалась
-    expect(page.locator(TABLE)).to_be_visible()
+    start, end = _selected_range(page)
+
+    # Суть кейса: в выдаче остаются ТОЛЬКО заказы из выбранного диапазона.
+    # Раньше проверялось лишь «таблица видна», что проходило и при полностью
+    # неработающем фильтре.
+    outside = [
+        o for o in _orders(page) if not (start <= _order_date(o["date"]) <= end)
+    ]
+    assert not outside, (
+        f"После фильтра {start}…{end} в выдаче остались заказы вне диапазона: "
+        + ", ".join(f"{o['number']} от {o['date']}" for o in outside[:5])
+    )
 
 
 # ===========================================================================
@@ -268,33 +354,55 @@ def test_filter_by_order_date(page: Page):
 def test_combined_filters(page: Page):
     """Ввести значение в поиск, выбрать статус, выбрать дату —
     список корректно фильтруется по всем условиям одновременно."""
-    # Поиск
+    # Берём реальный заказ за образец: все три фильтра настроим так, чтобы он
+    # им удовлетворял, и проверим, что он остался, а лишнего не осталось.
+    orders = _orders(page)
+    if not orders:
+        pytest.skip("У учётки нет заказов — комбинировать фильтры не на чем")
+    sample = orders[0]
+    number = sample["number"].lstrip("#")
+
+    # 1. Поиск по номеру этого заказа
     search = page.locator(SEARCH_INPUT)
-    search.fill("184")
+    search.fill(number)
     search.press("Enter")
-    page.wait_for_timeout(1000)
+    page.wait_for_timeout(2000)
 
-    # Статус (первый v-select — статус заказа)
-    vs = page.locator(STATUS_SELECT).first
-    vs.click()
-    page.wait_for_timeout(500)
-    options = page.locator(".vs__dropdown-menu li, .vs__dropdown-option")
-    if options.count() > 0:
-        options.first.click()
-    page.wait_for_timeout(1000)
+    # 2. Его же статус. Прежняя версия кликала `.v-select`, а это фильтр
+    #    КОМПАНИИ, а не статуса — то есть кейс проверял не то, что заявлено.
+    status = _apply_status(page, sample["status"])
 
-    # Дата
-    date_input = page.locator(DATE_INPUT)
-    date_input.click()
-    page.wait_for_timeout(500)
-    day_cell = page.locator(".mx-table-date td.cell:not(.disabled)").first
-    if day_cell.count() > 0 and day_cell.is_visible():
-        day_cell.click()
-    page.wait_for_timeout(1000)
+    # 3. Диапазон дат, покрывающий его дату оформления
+    page.locator(DATE_INPUT).click()
+    cells = page.locator(".mx-table-date td.cell:not(.disabled)")
+    expect(cells.first).to_be_visible(timeout=10_000)
+    cells.first.click()
+    cells.last.click()
+    page.wait_for_timeout(2500)
+    start, end = _selected_range(page)
 
-    # Страница не сломана
-    expect(page.locator(TABLE)).to_be_visible()
-    expect(page.locator(PAGE_ACCOUNT)).to_be_visible()
+    result = _orders(page)
+
+    # Если образец выпал из диапазона календаря — сверять нечего, но и молча
+    # проходить нельзя: тогда проверяем только согласованность выдачи.
+    if start <= _order_date(sample["date"]) <= end:
+        assert any(o["number"] == sample["number"] for o in result), (
+            f"Заказ {sample['number']} удовлетворяет всем трём фильтрам "
+            f"(номер {number}, статус «{status}», дата {sample['date']} "
+            f"в диапазоне {start}…{end}), но пропал из выдачи"
+        )
+
+    broken = [
+        o for o in result
+        if number not in o["number"].lstrip("#")
+        or o["status"] != status
+        or not (start <= _order_date(o["date"]) <= end)
+    ]
+    assert not broken, (
+        "Фильтры применились не совместно — в выдаче есть заказы, не подходящие "
+        "хотя бы под одно условие: "
+        + ", ".join(f"{o['number']}/{o['status']}/{o['date']}" for o in broken[:5])
+    )
 
 
 # ===========================================================================

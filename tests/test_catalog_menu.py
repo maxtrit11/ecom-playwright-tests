@@ -143,24 +143,36 @@ def test_category_without_subcategories(page: Page):
     count = categories.count()
 
     # Ищем категорию без подкатегорий (перебираем)
-    found_empty = False
+    empty_category = None
     for i in range(count):
         cat = categories.nth(i)
         cat.hover()
         page.wait_for_timeout(300)
 
         active_panel = page.locator(f"{SUBCATEGORIES}.active")
-        if active_panel.count() == 0:
-            found_empty = True
+        if active_panel.count() == 0 or active_panel.locator(SUBCATEGORIES_ITEM).count() == 0:
+            empty_category = cat
             break
 
-        items = active_panel.locator(SUBCATEGORIES_ITEM)
-        if items.count() == 0:
-            found_empty = True
-            break
-
-    if not found_empty:
+    if empty_category is None:
         pytest.skip("Все категории имеют подкатегории — кейс не применим")
+
+    # Раньше тест на этом заканчивался без единого ассерта: нашли категорию —
+    # молча прошёл, не нашли — скип. Упасть он не мог в принципе, то есть
+    # регрессию не поймал бы. Проверяем состояние ЯВНО.
+    name = (empty_category.inner_text() or "").strip()
+    empty_category.hover()
+
+    panel = page.locator(f"{SUBCATEGORIES}.active")
+    if panel.count():
+        expect(panel.locator(SUBCATEGORIES_ITEM)).to_have_count(
+            0, timeout=10_000
+        ), f"У категории «{name}» без подкатегорий панель показывает элементы"
+    else:
+        expect(page.locator(f"{SUBCATEGORIES}.active")).to_have_count(0, timeout=10_000)
+
+    # Меню при этом остаётся рабочим, а не схлопывается вместе с панелью.
+    expect(page.locator(MENU_ITEMS)).to_be_visible(timeout=10_000)
 
 
 # ===========================================================================
