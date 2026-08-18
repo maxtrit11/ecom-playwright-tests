@@ -401,7 +401,12 @@ def test_place_order_happy_path(cart_with_product: Page):
         options = page.locator(DROPDOWN_OPTION)
         expect(options.first).to_be_visible(timeout=15_000)
         options.first.click()
-        page.wait_for_timeout(1000)
+        # Проверяем, что значение ДЕЙСТВИТЕЛЬНО выбралось. Полагаться на класс
+        # `unvalid` тут нельзя: он появляется только ПОСЛЕ неудачной попытки
+        # отправки, то есть до первого клика по «Разместить заказ» его нет
+        # даже у пустых полей. Из-за этого невыбранный сектор проходил
+        # незамеченным, а тест падал позже и невнятно — «нет подтверждения».
+        expect(sector.locator(".vs__selected")).to_have_count(1, timeout=15_000)
 
     street = page.locator(INPUT_STREET)
     if street.count():
@@ -436,7 +441,23 @@ def test_place_order_happy_path(cart_with_product: Page):
     # Успех подтверждается попапом с НОМЕРОМ заказа — это признак того, что
     # заявка реально создана, а не просто очистилась локальная корзина.
     success = page.locator(SUCCESS_POPUP)
-    expect(success).to_be_visible(timeout=45_000)
+    try:
+        expect(success).to_be_visible(timeout=45_000)
+    except AssertionError:
+        # Подтверждения нет. Самая частая причина — незаполненное обязательное
+        # поле: форма молча не отправляется, а поля подсвечиваются `unvalid`
+        # уже ПОСЛЕ попытки. Показываем их, иначе разбираться придётся вслепую.
+        invalid = page.locator(INVALID_FIELD)
+        blocking = [
+            (invalid.nth(i).locator("label").first.inner_text() or "").strip()
+            for i in range(min(invalid.count(), 5))
+        ]
+        raise AssertionError(
+            "Заказ не оформился: подтверждения нет. "
+            + (f"Форма подсветила поля: {', '.join(blocking)}"
+               if blocking else "Незаполненных полей форма не показывает — "
+                                "причина не в валидации.")
+        ) from None
     expect(success).to_contain_text(re.compile(r"успешно оформлен", re.I))
     assert re.search(r"\d{4,}", success.inner_text()), (
         f"В подтверждении нет номера заказа: {success.inner_text()!r}"
