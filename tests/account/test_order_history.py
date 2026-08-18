@@ -36,26 +36,25 @@ ORDER_ITEM = ".account-table__content__table__list__row__item"
 # Фильтры.
 #
 # ВНИМАНИЕ (проверено вживую 2026-08-18): блоков `.account-table__filters` ДВА
-# — в первом «Поиск» и «Статус заказа», во втором «Дата заказа», «Компания» и
-# «Избранные заказы». Селектор `.account-table__filters .v-select` попадает
-# ТОЛЬКО в «Компанию»: у неё корень `<v-select class="v-select …">`, а у
-# «Статуса заказа» — тег `<v-select>` БЕЗ этого класса, поэтому по `.v-select`
-# он не находится. Из-за этого тесты статуса и комбинированных фильтров
-# фактически дёргали фильтр компании. Поэтому поля адресуем по их подписи.
+# — в первом «Поиск» и «Статус заказа», во втором «Дата заказа» и «Избранные
+# заказы». Поля адресуем по ПОДПИСИ, а не по типу контрола: у «Статуса
+# заказа» корень — тег `<v-select>` без класса `v-select`, и селектор
+# `.account-table__filters .v-select` в него не попадает. Пока в фильтрах
+# была «Компания» (у неё корень с этим классом), тесты статуса молча дёргали
+# её вместо статуса. Компанию убрали из кабинета 2026-08-18.
 SEARCH_INPUT = ".account-table__filters .g-input input"
 STATUS_FIELD = '.account-table__filters-item:has(label:text-is("Статус заказа"))'
 STATUS_TRIGGER = f"{STATUS_FIELD} input.vs__search"
 DROPDOWN_OPTION = ".vs__dropdown-menu li"
-# Оставлено ради обратной совместимости с тестом компании: это ИМЕННО она.
-COMPANY_SELECT = ".account-table__filters .v-select"
 DATE_PICKER = ".account-table__filters .mx-datepicker"
 DATE_INPUT = ".account-table__filters .mx-input"
 
-# Колонки таблицы: Номер | Дата оформления | Тип доставки | Тип оплаты |
-# Компания | Тип заказа | Статус заказа | Общая сумма | Действия
-COL_NUMBER = 0
-COL_DATE = 1
-COL_STATUS = 6
+# Колонки таблицы НЕ адресуем по номеру: состав меняется. 2026-08-18 из неё
+# убрали «Компанию» и «Общую сумму», и статус уехал с индекса 6 на 5 — тесты,
+# читавшие ячейку по индексу, стали бы брать пустую. Ищем по заголовку.
+COL_NUMBER = "Номер"
+COL_DATE = "Дата оформления"
+COL_STATUS = "Статус заказа"
 
 # «Все заказы» — это сброс фильтра, а не статус: выбирать его для проверки
 # фильтрации бессмысленно.
@@ -158,15 +157,38 @@ def login_and_open_order_history(page: Page):
 # Хелперы разбора таблицы
 # ---------------------------------------------------------------------------
 def _orders(page: Page) -> list[dict]:
-    """Заказы из таблицы: номер, дата оформления и статус по каждой строке."""
+    """Заказы из таблицы: номер, дата оформления и статус по каждой строке.
+
+    Колонки находим по подписи в шапке. Раньше брали по индексу, и когда из
+    таблицы убрали «Компанию» и «Общую сумму» (2026-08-18), статус сместился
+    с 6-й позиции на 5-ю — тесты начали бы читать пустую ячейку и падать на
+    исправном продукте.
+    """
     return page.evaluate(
-        """() => [...document.querySelectorAll(
-             '.account-table__content__table__list__row')].map(r => {
-               const c = [...r.querySelectorAll(
-                 '.account-table__content__table__list__row__item')]
-                 .map(e => e.innerText.replace(/\\s+/g, ' ').trim());
-               return {number: c[0], date: c[1], status: c[6]};
-             })"""
+        """([numberLabel, dateLabel, statusLabel]) => {
+             const header = document.querySelector(
+               '.account-table__content__table__header');
+             const labels = header
+               ? header.innerText.split('\\n').map(s => s.trim()).filter(Boolean)
+               : [];
+             const idx = (label) => labels.findIndex(
+               l => l.toLowerCase().startsWith(label.toLowerCase()));
+             const iNum = idx(numberLabel);
+             const iDate = idx(dateLabel);
+             const iStatus = idx(statusLabel);
+             return [...document.querySelectorAll(
+               '.account-table__content__table__list__row')].map(r => {
+                 const c = [...r.querySelectorAll(
+                   '.account-table__content__table__list__row__item')]
+                   .map(e => e.innerText.replace(/\\s+/g, ' ').trim());
+                 return {
+                   number: iNum >= 0 ? c[iNum] : null,
+                   date: iDate >= 0 ? c[iDate] : null,
+                   status: iStatus >= 0 ? c[iStatus] : null,
+                 };
+               });
+           }""",
+        [COL_NUMBER, COL_DATE, COL_STATUS],
     )
 
 
@@ -219,9 +241,9 @@ def test_order_history_page_displayed(page: Page):
     expect(heading).to_be_visible()
 
     # Фильтры видимы.
-    # Панель разбита на ДВА ряда `.account-table__filters` (проверено вживую
-    # 2026-08-12): ряд 1 — «Поиск» и «Статус заказа», ряд 2 — «Дата заказа»,
-    # «Компания» и «Избранные заказы». Раньше ряд был один, поэтому строгий
+    # Панель разбита на ДВА ряда `.account-table__filters`: ряд 1 — «Поиск» и
+    # «Статус заказа», ряд 2 — «Дата заказа» и «Избранные заказы» («Компанию»
+    # убрали из кабинета 2026-08-18). Раньше ряд был один, поэтому строгий
     # `expect` по общему селектору падал со strict mode violation, а не по
     # вине продукта. Проверяем все ряды и наличие заявленных фильтров.
     filters = page.locator(TABLE_FILTERS)
