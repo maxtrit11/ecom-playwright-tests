@@ -1,0 +1,280 @@
+"""Тесты корзины «Вид 2 — отдельная страница» (stage.ecom.md, локаль /ru)
+
+Вид корзины задаётся в админке (Настройки сайта → «Вид страницы Корзины») и
+общий для всего сайта. Виды взаимоисключающие: при Виде 1 корзина открывается
+поп-апом и страницы `/ru/cart` НЕ существует, при Виде 2 — наоборот, есть
+страница и нет поп-апа. Поэтому эти тесты и тесты `test_cart_block.py` никогда
+не проходят в одном прогоне: активные скипаются по `require_cart_view`.
+
+Переключением занимается CI отдельным шагом (`tools/cart_view.py`), тесты вид
+не меняют — это глобальная настройка, общая с ручной работой на стенде.
+
+Разметка снята вживую 2026-08-18 при активном Виде 2:
+
+- страница `/ru/cart`, корень `.page-cart`;
+- товары: `.cart-products__items` → `.plank-card` (десктоп). ВНИМАНИЕ: рядом
+  лежит `.plank-card-mobile` с почти теми же классами — он в DOM всегда, но на
+  десктопе скрыт, поэтому берём именно `.plank-card` и не используем поиск по
+  общему префиксу;
+- в строке: `.plank-card__group__title`, `__price`, `__oldPrice`,
+  кнопки `.plank-card__delete-btn` («Удалить»),
+  `.plank-card__btns__decrease` / `__increase`;
+- «Очистить корзину» — `.cart-products__header__clear-btn` (единственный
+  селектор, совпадающий с Видом 1);
+- пустое состояние — `.cart-products__items__empty`;
+- форма заказа на той же странице: `.order-form`, итоги в
+  `.order-form__content__footer` («Итого», «Доставка», «Скидка»,
+  «Общая сумма»), кнопка «Разместить заказ» в
+  `.order-form__content__footer__submit`, согласие — `.terms__checkbox`;
+- доставка и оплата — не радио-кнопки, а табы `.ui-action-tab-btn`.
+
+Заказы отсюда НЕ отправляем: сабмит создаёт реальную заявку на стенде. Тесты
+проверяют состав, пересчёт и арифметику, но не жмут «Разместить заказ».
+"""
+
+import re
+
+import pytest
+from playwright.sync_api import Page, expect
+
+from conftest import CART_VIEW_PAGE
+
+CART_URL = "/ru/cart"
+
+# Страница корзины
+PAGE_CART = ".page-cart"
+ITEMS = ".cart-products__items"
+ROW = ".plank-card"
+ROW_TITLE = ".plank-card__group__title"
+ROW_PRICE = ".plank-card__group__price"
+BTN_DELETE = ".plank-card__delete-btn"
+BTN_MINUS = ".plank-card__btns__decrease"
+BTN_PLUS = ".plank-card__btns__increase"
+QTY = ".plank-card__btns"
+BTN_CLEAR = "button.cart-products__header__clear-btn"
+EMPTY = ".cart-products__items__empty"
+
+# Форма заказа
+ORDER_FORM = ".order-form"
+FOOTER = ".order-form__content__footer"
+SUBMIT_AREA = ".order-form__content__footer__submit"
+TERMS_CHECKBOX = ".terms__checkbox"
+DELIVERY_TABS = ".order-form__content__segment__content__tabs .ui-action-tab-btn"
+PROMOCODE = ".order-form__content__promocode"
+
+# Каталог — откуда кладём товар
+CATEGORY_URL = "/ru/acustica-portabila"
+CARD = ".product__item"
+CARD_PRICES = ".product__prices"
+BTN_ADD_CART = "button.btn__add_cart"
+
+HEADER_CART_BTN = "button.btn__action.btn__cart:visible"
+
+_AMOUNT_RE = re.compile(r"(\d[\d\s ]*(?:[.,]\d{1,2})?)\s*MDL")
+
+
+def _bani(text: str) -> int:
+    """Сумма в банах. Дробные цены («14 449.15 MDL») иначе разъезжаются."""
+    match = _AMOUNT_RE.search(text or "")
+    assert match, f"В строке {text!r} не нашли суммы в MDL"
+    return int(round(float(match.group(1).replace(" ", "").replace(" ", "").replace(",", ".")) * 100))
+
+
+def _footer_amount(page: Page, label: str) -> int | None:
+    """Сумма из строки итогов по её подписи («Итого», «Скидка», …)."""
+    row = page.locator(f"{FOOTER} >> text={label}").first
+    if not row.count():
+        return None
+    text = row.locator("xpath=..").inner_text()
+    match = _AMOUNT_RE.search(text)
+    return _bani(match.group(0)) if match else None
+
+
+@pytest.fixture(autouse=True)
+def only_cart_page_view(require_cart_view):
+    """Весь файл имеет смысл только при активном Виде 2."""
+    require_cart_view(CART_VIEW_PAGE, "корзина отдельной страницей")
+
+
+@pytest.fixture
+def cart_with_product(page: Page) -> Page:
+    """Положить товар со стоком в корзину и открыть страницу корзины.
+
+    Карточки перебираем: товар «под заказ» уводит в предзаказ и корзина
+    остаётся пустой — на этом уже спотыкались при съёмке разметки.
+    """
+    page.set_viewport_size({"width": 1920, "height": 1080})
+    page.goto(CATEGORY_URL, wait_until="domcontentloaded", timeout=60_000)
+    expect(page.locator(CARD).first).to_be_visible(timeout=30_000)
+
+    cards = page.locator(f"{CARD}:has({CARD_PRICES}):has({BTN_ADD_CART})")
+    added = False
+    for i in range(min(cards.count(), 8)):
+        cards.nth(i).locator(BTN_ADD_CART).click()
+        page.wait_for_timeout(2000)
+        if "MDL" in (page.locator(HEADER_CART_BTN).first.inner_text() or ""):
+            added = True
+            break
+    if not added:
+        pytest.skip("Не удалось положить в корзину ни один товар из категории")
+
+    page.goto(CART_URL, wait_until="domcontentloaded", timeout=60_000)
+    expect(page.locator(f"{ROW}").first).to_be_visible(timeout=30_000)
+    yield page
+
+    # Прибираем за собой: корзина живёт в cookie и протекает в другие тесты.
+    try:
+        if page.locator(BTN_CLEAR).count():
+            page.locator(BTN_CLEAR).first.click()
+            page.wait_for_timeout(1500)
+    except Exception:
+        pass
+
+
+# ===========================================================================
+# Состав корзины
+# ===========================================================================
+def test_cart_opens_as_page_not_popup(cart_with_product: Page):
+    """Корзина — отдельная страница, поп-апа при этом виде нет."""
+    page = cart_with_product
+    expect(page).to_have_url(re.compile(r"/cart"), timeout=20_000)
+    expect(page.locator(PAGE_CART)).to_be_visible(timeout=20_000)
+    expect(page.locator(".modal__cart")).to_have_count(0)
+
+
+def test_header_cart_leads_to_cart_page(cart_with_product: Page):
+    """Кнопка корзины в шапке ведёт на страницу корзины."""
+    page = cart_with_product
+    page.goto(CATEGORY_URL, wait_until="domcontentloaded", timeout=60_000)
+    page.locator(HEADER_CART_BTN).first.click()
+
+    expect(page).to_have_url(re.compile(r"/cart"), timeout=30_000)
+    expect(page.locator(PAGE_CART)).to_be_visible(timeout=20_000)
+
+
+def test_added_product_shown_with_title_and_price(cart_with_product: Page):
+    """Положенный товар виден в корзине с названием и ценой."""
+    page = cart_with_product
+    row = page.locator(ROW).first
+
+    title = (row.locator(ROW_TITLE).first.inner_text() or "").strip()
+    assert title, "У товара в корзине пустое название"
+
+    price = row.locator(ROW_PRICE).first.inner_text()
+    assert _AMOUNT_RE.search(price), f"У товара «{title}» не видно цены: {price!r}"
+
+
+# ===========================================================================
+# Изменение количества
+# ===========================================================================
+def test_increase_quantity_raises_total(cart_with_product: Page):
+    """Плюс увеличивает количество, и общая сумма растёт."""
+    page = cart_with_product
+    before = _footer_amount(page, "Общая сумма")
+    assert before, "Не нашли «Общая сумма» в итогах"
+
+    page.locator(BTN_PLUS).first.click()
+    page.wait_for_timeout(2500)
+
+    after = _footer_amount(page, "Общая сумма")
+    assert after and after > before, (
+        f"После нажатия «+» общая сумма не выросла: было {before / 100:.2f}, "
+        f"стало {(after or 0) / 100:.2f} MDL"
+    )
+
+
+def test_decrease_quantity_lowers_total(cart_with_product: Page):
+    """Минус после плюса возвращает сумму обратно."""
+    page = cart_with_product
+    base = _footer_amount(page, "Общая сумма")
+
+    page.locator(BTN_PLUS).first.click()
+    page.wait_for_timeout(2500)
+    raised = _footer_amount(page, "Общая сумма")
+    assert raised and raised > base, "Подготовка не удалась: «+» не увеличил сумму"
+
+    page.locator(BTN_MINUS).first.click()
+    page.wait_for_timeout(2500)
+
+    assert _footer_amount(page, "Общая сумма") == base, (
+        "После «−» общая сумма не вернулась к исходной"
+    )
+
+
+# ===========================================================================
+# Удаление и очистка
+# ===========================================================================
+def test_delete_product_removes_row(cart_with_product: Page):
+    """«Удалить» убирает товар из корзины."""
+    page = cart_with_product
+    before = page.locator(ROW).count()
+
+    page.locator(BTN_DELETE).first.click()
+
+    expect(page.locator(ROW)).to_have_count(before - 1, timeout=20_000)
+
+
+def test_clear_cart_empties_page(cart_with_product: Page):
+    """«Очистить корзину» убирает все товары и показывает пустое состояние."""
+    page = cart_with_product
+
+    page.locator(BTN_CLEAR).first.click()
+
+    expect(page.locator(ROW)).to_have_count(0, timeout=20_000)
+    expect(page.locator(EMPTY)).to_be_visible(timeout=20_000)
+
+
+# ===========================================================================
+# Форма заказа на странице корзины
+# ===========================================================================
+def test_order_form_on_same_page(cart_with_product: Page):
+    """Оформление живёт на той же странице: форма, согласие и кнопка заказа."""
+    page = cart_with_product
+
+    expect(page.locator(ORDER_FORM)).to_be_visible(timeout=20_000)
+    expect(page.locator(TERMS_CHECKBOX)).to_be_attached(timeout=20_000)
+    expect(page.locator(SUBMIT_AREA)).to_contain_text(
+        re.compile("разместить заказ", re.I), timeout=20_000
+    )
+
+
+def test_order_totals_are_consistent(cart_with_product: Page):
+    """Общая сумма = Итого − Скидка + Доставка.
+
+    Проверяем инвариант, а не конкретные величины: цены на стенде меняются,
+    и ассерт на числа давал бы ложные падения (этим уже обжигались в чекауте
+    Вида 1).
+    """
+    page = cart_with_product
+
+    goods = _footer_amount(page, "Итого")
+    total = _footer_amount(page, "Общая сумма")
+    assert goods is not None and total is not None, (
+        "В итогах не нашли строк «Итого» и «Общая сумма»"
+    )
+
+    discount = _footer_amount(page, "Скидка") or 0
+    delivery = _footer_amount(page, "Доставка") or 0
+
+    assert total == goods - discount + delivery, (
+        f"Итоги не сходятся: {goods / 100:.2f} − {discount / 100:.2f} + "
+        f"{delivery / 100:.2f} = {(goods - discount + delivery) / 100:.2f}, "
+        f"а показано {total / 100:.2f} MDL"
+    )
+
+
+def test_delivery_type_tabs_switch(cart_with_product: Page):
+    """Тип доставки выбирается табами, выбранный подсвечивается."""
+    page = cart_with_product
+    tabs = page.locator(DELIVERY_TABS)
+    if tabs.count() < 2:
+        pytest.skip("На форме меньше двух табов доставки — переключать нечего")
+
+    second = tabs.nth(1)
+    label = (second.inner_text() or "").strip()
+    second.click()
+    page.wait_for_timeout(2000)
+
+    expect(second).to_have_class(re.compile(r"active|selected|checked"), timeout=15_000), (
+        f"Таб «{label}» не отметился активным после клика"
+    )

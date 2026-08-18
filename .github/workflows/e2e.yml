@@ -147,6 +147,54 @@ jobs:
                    --html=report.html --self-contained-html \
                    --css=assets/report.css
 
+      # =====================================================================
+      # ВТОРОЙ ЭТАП: корзина «Вид 2 — отдельная страница».
+      #
+      # Виды корзины взаимоисключающие: при Виде 1 корзина открывается
+      # поп-апом и страницы /cart НЕТ, при Виде 2 — наоборот. Проверить оба за
+      # один прогон можно только переключив стенд.
+      #
+      # Почему это допустимо здесь и запрещено локально: настройка глобальная
+      # и общая с ручной работой. Ночью на стенде никто не работает, поэтому
+      # переключаем только тут — скрипт требует ALLOW_CART_VIEW_SWITCH=1 и без
+      # него откажется работать.
+      #
+      # Переключение не «подождать и надеяться»: скрипт опрашивает фронт, пока
+      # настройка реально не приедет в SSR-пейлоад. Замер 2026-08-18 — около
+      # 30 c на полный цикл в одну сторону.
+      # =====================================================================
+      - name: Switch cart to view 2
+        id: switch_cart
+        if: always()
+        continue-on-error: true   # не смогли переключить — не валим прогон
+        env:
+          ALLOW_CART_VIEW_SWITCH: "1"
+        run: python tools/cart_view.py set casadeltabaco
+
+      # Гоняем только тесты корзины-страницы. Остальная суита уже отработала
+      # на Виде 1; прогонять её повторно смысла нет, а время стоит дорого.
+      - name: Run cart view 2 tests
+        if: steps.switch_cart.outcome == 'success'
+        run: |
+          xvfb-run --auto-servernum \
+            pytest --headed --browser chromium \
+                   tests/test_cart_page.py \
+                   --reruns 1 \
+                   --timeout=120 \
+                   --screenshot=only-on-failure \
+                   --output=test-results-cart2 \
+                   --html=report-cart-view2.html --self-contained-html \
+                   --css=assets/report.css
+
+      # ВСЕГДА возвращаем Вид 1: иначе стенд останется в чужом виде и утром
+      # сломает ручную проверку. `if: always()` обязателен — шаг должен
+      # отработать и после падения тестов выше, и после отмены прогона.
+      - name: Restore cart view 1
+        if: always()
+        env:
+          ALLOW_CART_VIEW_SWITCH: "1"
+        run: python tools/cart_view.py set default
+
       # Единственный артефакт — self-contained report.html (пасс/фейл-таблица
       # + вшитые скриншоты фейлов). test-results/ отдельно не грузим: трейсов
       # больше нет, а скриншоты уже внутри отчёта. retention 2 дня: держим
@@ -156,5 +204,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pytest-html-report
-          path: report.html
+          path: |
+            report.html
+            report-cart-view2.html
           retention-days: 2
