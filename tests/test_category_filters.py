@@ -393,20 +393,9 @@ def test_price_filter_narrows_results(page: Page):
     except ValueError:
         new_max = "1"
 
-    # Прайс-инпут коммитит фильтр только по native blur. Чтобы это сработало
-    # надёжно: реальный фокус через клик → ввод → Tab (реальный keyboard-blur).
-    # URL обновляется через pushState — wait_for_url его не ловит,
-    # поэтому опрашиваем через wait_for_function. Между шагами небольшие
-    # паузы, иначе Vue v-model debounce заглатывает изменения.
-    max_input.click()
-    page.wait_for_timeout(300)
-    max_input.fill(new_max)
-    page.wait_for_timeout(500)
-    max_input.press("Tab")
-    page.wait_for_function(
-        "() => location.search.includes('filters=price')", timeout=15_000
-    )
-    _wait_after_filter(page)
+    # Ввод и ожидание применения — общим хелпером: URL обновляется через
+    # pushState и с заметной задержкой, см. `_commit_price_input`.
+    _commit_price_input(page, max_input, new_max, "max")
 
     count_after = _found_count(page)
     assert count_after <= count_before, (
@@ -449,19 +438,43 @@ def _visible_prices_bani(page: Page) -> list[int]:
     )
 
 
-def _commit_price_input(page: Page, field: Locator, value: str) -> None:
-    """Вписать значение в поле цены и зафиксировать его.
+def _commit_price_input(page: Page, field: Locator, value: str, bound: str) -> None:
+    """Вписать границу цены (`bound`: "min" или "max") и дождаться применения.
 
     Фильтр применяется только по native blur, поэтому: реальный фокус кликом
     → ввод → Tab. Паузы между шагами обязательны, иначе debounce v-model
-    заглатывает изменение (та же механика, что в тесте выше).
+    заглатывает изменение.
+
+    Дальше обязательно ЖДЁМ саму границу в URL. Глухая пауза не годится:
+    вживую (2026-08-19, /ro/jbl-tune) вторая граница применяется через ~9.7 с
+    после Tab, и URL, счётчик «найдено» и карточки переключаются одним тактом.
+    Проверка `location.search.includes('filters=price')` тоже бесполезна —
+    после ПЕРВОЙ границы `filters=price` в URL уже есть, условие выполняется
+    мгновенно, и тест читает выдачу от предыдущего состояния фильтра. Именно
+    это уронило ночной прогон 32209900055 («в выдаче товары дороже максимума»)
+    на полностью исправном фильтре.
     """
     field.click()
     page.wait_for_timeout(300)
     field.fill(value)
     page.wait_for_timeout(500)
     field.press("Tab")
-    page.wait_for_timeout(2_000)
+    try:
+        page.wait_for_function(
+            """([value, isMax]) => {
+                const m = decodeURIComponent(location.search)
+                    .match(/filters=price:(\\d+),(\\d+)/);
+                return !!m && m[isMax ? 2 : 1] === value;
+            }""",
+            arg=[value, bound == "max"],
+            timeout=25_000,
+        )
+    except Exception:
+        pytest.fail(
+            f"Граница цены {bound}={value} не применилась за 25 с, "
+            f"URL остался {page.url}"
+        )
+    _wait_after_filter(page)
 
 
 def test_price_filter_keeps_prices_within_range(page: Page):
@@ -488,12 +501,8 @@ def test_price_filter_keeps_prices_within_range(page: Page):
     if min_mdl >= max_mdl:
         pytest.skip(f"Цены категории слишком близки: {lo}-{hi} бань")
 
-    _commit_price_input(page, inputs.first, str(min_mdl))
-    _commit_price_input(page, inputs.last, str(max_mdl))
-    page.wait_for_function(
-        "() => location.search.includes('filters=price')", timeout=15_000
-    )
-    _wait_after_filter(page)
+    _commit_price_input(page, inputs.first, str(min_mdl), "min")
+    _commit_price_input(page, inputs.last, str(max_mdl), "max")
 
     prices_after = _visible_prices_bani(page)
     if not prices_after:
