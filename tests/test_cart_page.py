@@ -36,7 +36,7 @@ import re
 import time
 
 import pytest
-from playwright.sync_api import Page, expect
+from playwright.sync_api import Locator, Page, expect
 
 from conftest import CART_VIEW_PAGE
 
@@ -112,6 +112,24 @@ def _footer_amount(page: Page, label: str) -> int | None:
     return _bani(match.group(0)) if match else None
 
 
+def _appears(locator: Locator, timeout: int = 10_000) -> bool:
+    """Появился ли элемент за отведённое время.
+
+    Мгновенный `count()` тут даёт ложное «поля нет»: блок доставки
+    перерисовывается секунду-две после открытия формы, и обязательные
+    «Сектор» с «Улицей» в этот момент ещё не в DOM. Тест считал их
+    отсутствующими, пропускал заполнение и падал много позже на «нет
+    подтверждения» — а форма после сабмита подсвечивала ровно эти два поля
+    (прогон 32338373909, отчёт Вида 2). Та же грабля, что с фильтрами
+    категории.
+    """
+    try:
+        expect(locator.first).to_be_visible(timeout=timeout)
+        return True
+    except AssertionError:
+        return False
+
+
 @pytest.fixture(autouse=True)
 def only_cart_page_view(require_cart_view):
     """Весь файл имеет смысл только при активном Виде 2."""
@@ -165,7 +183,19 @@ def test_header_cart_leads_to_cart_page(cart_with_product: Page):
     """Кнопка корзины в шапке ведёт на страницу корзины."""
     page = cart_with_product
     page.goto(CATEGORY_URL, wait_until="domcontentloaded", timeout=60_000)
-    page.locator(HEADER_CART_BTN).first.click()
+
+    # Клик повторяем: первый после `domcontentloaded` регулярно теряется —
+    # обработчик вешается только на гидрации, а её мы не ждём (ждать
+    # `networkidle` на этом стенде бесполезно, сеть не затихает). Одиночный
+    # клик давал «URL не сменился за 30 с» на исправном продукте
+    # (прогон 32338373909, отчёт Вида 2).
+    for _ in range(3):
+        page.locator(HEADER_CART_BTN).first.click()
+        try:
+            expect(page).to_have_url(re.compile(r"/cart"), timeout=10_000)
+            break
+        except AssertionError:
+            continue
 
     expect(page).to_have_url(re.compile(r"/cart"), timeout=30_000)
     expect(page.locator(PAGE_CART)).to_be_visible(timeout=20_000)
@@ -396,7 +426,7 @@ def test_place_order_happy_path(cart_with_product: Page):
     # ничего не делает: запрос не уходит вообще, поле лишь подсвечивается
     # классом `unvalid`. Населённый пункт подставляется сам («мун. Кишинёв»).
     sector = page.locator(SECTOR_SELECT)
-    if sector.count():
+    if _appears(sector):
         sector.locator(".vs__search").first.click()
         options = page.locator(DROPDOWN_OPTION)
         expect(options.first).to_be_visible(timeout=15_000)
@@ -409,7 +439,7 @@ def test_place_order_happy_path(cart_with_product: Page):
         expect(sector.locator(".vs__selected")).to_have_count(1, timeout=15_000)
 
     street = page.locator(INPUT_STREET)
-    if street.count():
+    if _appears(street):
         street.first.fill("ул. Тестовая, д. 1, кв. 1")
 
     # Наличные и доставка по Кишинёву выбраны по умолчанию — подстраховываемся.

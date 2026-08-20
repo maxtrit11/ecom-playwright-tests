@@ -110,6 +110,12 @@ INPUT_STREET = f'{CHECKOUT_FORM} input[placeholder*="улицы" i]'
 CHK_TERMS = f'{CHECKOUT_FORM} input#terms-agreement-modal'
 LINK_TERMS = f'{CHECKOUT_FORM} a[href$="/terms"]'
 BTN_PLACE_ORDER = 'button.request[title="Оформить заказ"]'
+# Подтверждение заказа. Видимый узел — `.checkout__success_content`; обёртка
+# `.modal__checkout_success.show` при этом offsetParent === null, поэтому
+# ждать надо именно контент (проверено через MCP 2026-08-20).
+SUCCESS_POPUP = ".checkout__success_content"
+# Поля, подсвеченные формой как незаполненные. Класс `unvalid`, НЕ `invalid`.
+INVALID_FIELD = f"{CHECKOUT_FORM} .unvalid"
 
 # --- Валидация обязательных полей (кейс 376) ---
 # Проверено probe-скриптом на живом stage. При сабмите пустой формы:
@@ -254,6 +260,25 @@ def _sector_vselect_index(page: Page) -> int:
     )
 
 
+def _wait_sector_vselect(page: Page, timeout: int = 10_000) -> int:
+    """Дождаться, пока после выбора «Кишинёв» появится v-select сектора.
+
+    Блок адреса перерисовывается не мгновенно — секунду-две. Фиксированной
+    паузы тут мало: если не дождаться, `_sector_vselect_index` вернёт -1, что
+    неотличимо от честного «сектор предустановлен», и тест уйдёт сабмитить
+    форму без обязательного поля. Наблюдаемо это выглядит хуже некуда —
+    POST на создание заказа не уходит ВООБЩЕ, форма ничего не подсвечивает,
+    а тест падает много позже с «нет подтверждения» (прогон 32338373909).
+    """
+    deadline = time.monotonic() + timeout / 1000
+    while time.monotonic() < deadline:
+        idx = _sector_vselect_index(page)
+        if idx >= 0:
+            return idx
+        page.wait_for_timeout(300)
+    return -1
+
+
 def _setup_chisinau_address(page: Page) -> bool:
     """Настроить адрес доставки по Кишинёву.
 
@@ -284,15 +309,39 @@ def _setup_chisinau_address(page: Page) -> bool:
     # Выбрать сектор в активном пустом v-select. У части товаров сектор/город
     # уже предустановлен (активного пустого v-select нет, idx == -1) — тогда
     # адрес и так валиден, выбирать нечего.
-    idx = _sector_vselect_index(page)
-    if idx >= 0:
-        page.locator(VSELECT_SEARCH).nth(idx).click()
+    idx = _wait_sector_vselect(page)
+    if idx < 0:
+        return True
+
+    # Адресуем сам v-select и кликаем его внутренний `.vs__search`, а НЕ
+    # `.vs__search` по общему индексу: индекс считался среди `.v-select`, а
+    # применялся к другому набору узлов. Наборы совпадают не всегда (у
+    # задизейбленного v-select своя структура), и тогда открывался соседний
+    # список — сектор оставался пустым.
+    sector = page.locator(f"{CHECKOUT_FORM} .v-select").nth(idx)
+
+    # Две попытки: список рендерится асинхронно, и первый клик иногда уходит
+    # в пустоту (та же гонка, что и с поп-апом корзины).
+    for _ in range(2):
+        sector.locator(".vs__search").click()
         page.wait_for_timeout(800)
-        sector_items = page.locator(DROPDOWN_MENU)
-        expect(sector_items.first).to_be_visible(timeout=5_000)
-        sector_items.first.click()
+        items = page.locator(DROPDOWN_MENU)
+        try:
+            expect(items.first).to_be_visible(timeout=5_000)
+        except AssertionError:
+            continue
+        items.first.click()
         page.wait_for_timeout(400)
-    return True
+        if (sector.locator(".vs__selected").inner_text() or "").strip():
+            return True
+
+    # Молча возвращать True нельзя: сабмит без сектора не уходит ВООБЩЕ, и
+    # тест падал бы позже с невнятным «модалка не закрылась» вместо причины
+    # (прогон 32338373909).
+    raise AssertionError(
+        "Не удалось выбрать сектор доставки: выпадающий список не открылся "
+        "или значение не проставилось. Без сектора заказ не отправляется."
+    )
 
 
 # ===========================================================================
@@ -740,9 +789,19 @@ def test_place_order_happy_path(checkout: Page):
     # 1. ФИО
     page.locator(INPUT_NAME).fill("QA Autotest")
 
-    # 2. Телефон — уникальные 8 цифр, чтобы пройти антиспам
+    # 2. Телефон — уникальные 8 цифр, чтобы пройти антиспам.
+    #    ТОЛЬКО `press_sequentially`: поле обёрнуто в intl-tel-input, который
+    #    собирает значение из событий клавиатуры. После `fill()` цифры видны в
+    #    инпуте, но во внутреннюю модель не попадают — сабмит тихо не уходит,
+    #    и форма при этом НИЧЕГО не подсвечивает (поле-то заполнено на вид).
+    #    Ровно так тест и падал с «модалка не закрылась»: вручную тот же
+    #    сценарий проходит и создаёт заказ (проверено через MCP 2026-08-20,
+    #    заказы 225476 и 225477).
     unique_phone = "79" + str(int(time.time() * 1000))[-6:]
-    page.locator(INPUT_PHONE).fill(unique_phone)
+    phone = page.locator(INPUT_PHONE)
+    phone.click()
+    phone.press_sequentially(unique_phone, delay=50)
+    page.wait_for_timeout(300)
 
     # 3. E-mail
     page.locator(INPUT_EMAIL).fill(f"qa+{int(time.time())}@example.com")
@@ -766,23 +825,54 @@ def test_place_order_happy_path(checkout: Page):
     page.locator(CHK_TERMS).check()
     page.wait_for_timeout(200)
 
-    # 10. Сабмит
+    # 10. Сабмит. Заодно слушаем сам запрос создания заказа: без этого
+    #     «подтверждения нет» неразличимо в трёх разных случаях — форма не
+    #     отправила запрос, запрос ушёл и упал, запрос прошёл, а попап не
+    #     отрисовался. Эндпоинт подсмотрен в живом успешном заказе (MCP,
+    #     2026-08-20): POST .../general/v3/order/.
+    order_calls: list[str] = []
+    page.on(
+        "response",
+        lambda r: order_calls.append(f"{r.status} {r.url}")
+        if "/order/" in r.url and r.request.method == "POST"
+        else None,
+    )
+
     submit = page.locator(BTN_PLACE_ORDER).first
     submit.scroll_into_view_if_needed()
     expect(submit).to_be_enabled(timeout=5_000)
     submit.click()
 
-    # Главный признак успешного оформления — модалка корзины/чекаута закрывается
-    # и анонимная корзина обнуляется (заявка ушла, локальная корзина очищена).
+    # Признак успеха — попап с НОМЕРОМ заказа. Проверено вживую через MCP
+    # 2026-08-20: на Виде 1 он есть и держится («Ваш заказ успешно оформлен.
+    # Номер вашего заказа: 225476»), так что мягкое «если попался — проверим»
+    # больше не нужно. Номер важен: он доказывает, что заявка создана, а не
+    # что просто очистилась локальная корзина.
+    success = page.locator(SUCCESS_POPUP)
+    try:
+        expect(success).to_be_visible(timeout=45_000)
+    except AssertionError:
+        # Подтверждения нет. Самая частая причина — незаполненное обязательное
+        # поле: форма молча не отправляется, подсвечивая поля классом `unvalid`
+        # уже ПОСЛЕ попытки. Показываем их, иначе останется загадочное
+        # «модалка не закрылась» (ровно так и выглядел фейл прогона
+        # 32338373909, и причина по нему не читалась).
+        blocking = [
+            (page.locator(INVALID_FIELD).nth(i).inner_text() or "").replace("\n", " ").strip()
+            for i in range(min(page.locator(INVALID_FIELD).count(), 5))
+        ]
+        raise AssertionError(
+            "Заказ не оформился: подтверждения с номером нет. "
+            + (f"Форма подсветила поля: {', '.join(blocking)}. "
+               if blocking else "Незаполненных полей форма не показывает. ")
+            + (f"Запросы создания заказа: {order_calls}"
+               if order_calls else "POST на создание заказа вообще не ушёл.")
+        ) from None
+
+    assert re.search(r"\d{4,}", success.inner_text()), (
+        f"В подтверждении нет номера заказа: {success.inner_text()!r}"
+    )
+
+    # И только потом — что корзина действительно опустела.
     expect(page.locator(CART_MODAL_SHOWN)).to_have_count(0, timeout=30_000)
     expect(page.locator(CART_PRODUCT)).to_have_count(0, timeout=15_000)
-
-    # Опционально: если ловится success-попап одной из известных нам разновидностей —
-    # хорошо, но не делаем строгое требование (на stage он мелькает доли секунды
-    # и в .modal__checkout_success.show может не оказаться).
-    success = page.locator(
-        ".modal__checkout_success.show, .modal__success.show, "
-        '[class*="checkout_success"].show, [class*="success"][class*="modal"].show'
-    )
-    if success.count() > 0:
-        expect(success.first).to_be_visible(timeout=5_000)

@@ -18,6 +18,7 @@
 
 import os
 import re
+import time
 
 import pytest
 from playwright.sync_api import Locator, Page, expect
@@ -454,27 +455,54 @@ def _commit_price_input(page: Page, field: Locator, value: str, bound: str) -> N
     это уронило ночной прогон 32209900055 («в выдаче товары дороже максимума»)
     на полностью исправном фильтре.
     """
-    field.click()
-    page.wait_for_timeout(300)
-    field.fill(value)
-    page.wait_for_timeout(500)
-    field.press("Tab")
-    try:
-        page.wait_for_function(
-            """([value, isMax]) => {
-                const m = decodeURIComponent(location.search)
-                    .match(/filters=price:(\\d+),(\\d+)/);
-                return !!m && m[isMax ? 2 : 1] === value;
-            }""",
-            arg=[value, bound == "max"],
-            timeout=25_000,
-        )
-    except Exception:
-        pytest.fail(
-            f"Граница цены {bound}={value} не применилась за 25 с, "
-            f"URL остался {page.url}"
-        )
+    # Ввод повторяем: применение ПЕРВОЙ границы перерисовывает панель фильтров,
+    # и ввод второй, попавший в этот такт, теряется вместе со старым узлом
+    # инпута — значение в поле есть, а blur уже некому обработать. Так тест и
+    # падал в CI («граница max не применилась за 25 с»), проходя при этом с
+    # ретрая (прогон 32338373909). Ждём границу в URL — единственный надёжный
+    # признак применения (почему не `includes('filters=price')` — ниже).
+    grid_before = _visible_prices_bani(page)
+
+    attempts = 3
+    for attempt in range(1, attempts + 1):
+        field.click()
+        page.wait_for_timeout(300)
+        field.fill(value)
+        page.wait_for_timeout(500)
+        field.press("Tab")
+        try:
+            page.wait_for_function(
+                """([value, isMax]) => {
+                    const m = decodeURIComponent(location.search)
+                        .match(/filters=price:(\\d+),(\\d+)/);
+                    return !!m && m[isMax ? 2 : 1] === value;
+                }""",
+                arg=[value, bound == "max"],
+                timeout=15_000,
+            )
+            break
+        except Exception:
+            if attempt == attempts:
+                pytest.fail(
+                    f"Граница цены {bound}={value} не применилась за "
+                    f"{attempts} попытки, URL остался {page.url}"
+                )
     _wait_after_filter(page)
+
+    # URL — признак того, что фильтр ПРИНЯТ, но не того, что выдача уже
+    # пересобрана: карточки заметно отстают от смены адреса. Читая цены сразу,
+    # тест видел старую сетку и падал на «в выдаче товары дороже максимума»
+    # при исправном фильтре. Ждём, пока набор цен реально изменится.
+    #
+    # Ждём именно ИЗМЕНЕНИЯ, а не попадания в интервал: «ждать, пока станет
+    # правильно» — это ассерт, вывернутый в ожидание, и настоящий баг фильтра
+    # он бы замаскировал. Не дождались — идём дальше, пусть падает ассерт
+    # теста со своим текстом.
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        if _visible_prices_bani(page) != grid_before:
+            break
+        page.wait_for_timeout(500)
 
 
 def test_price_filter_keeps_prices_within_range(page: Page):

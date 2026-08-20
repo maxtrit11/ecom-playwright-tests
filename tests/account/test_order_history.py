@@ -7,6 +7,7 @@ stage не пускал в аккаунт с IP GitHub Actions. С 2026-08-17 б
 """
 
 import re
+import time
 from datetime import datetime
 
 import pytest
@@ -156,6 +157,23 @@ def login_and_open_order_history(page: Page):
 # ---------------------------------------------------------------------------
 # Хелперы разбора таблицы
 # ---------------------------------------------------------------------------
+def _wait_table_settled(page: Page, timeout: int = 15_000) -> None:
+    """Дождаться, пока таблица заказов перестанет перерисовываться.
+
+    Признак покоя — неизменное число строк в двух последовательных замерах с
+    интервалом ~400 мс. Ждать `networkidle` тут нельзя: на странице живут
+    аналитика и виджеты, сеть не затихает, и ожидание упирается в таймаут.
+    """
+    deadline = time.monotonic() + timeout / 1000
+    previous = -1
+    while time.monotonic() < deadline:
+        current = page.locator(ORDER_ROW).count()
+        if current == previous:
+            return
+        previous = current
+        page.wait_for_timeout(400)
+
+
 def _orders(page: Page) -> list[dict]:
     """Заказы из таблицы: номер, дата оформления и статус по каждой строке.
 
@@ -205,21 +223,70 @@ def _selected_range(page: Page) -> tuple:
     return tuple(datetime.strptime(p, "%Y-%m-%d").date() for p in parts)
 
 
-def _apply_status(page: Page, wanted: str | None = None) -> str:
-    """Выбрать статус в фильтре «Статус заказа». Возвращает выбранное значение.
+def _open_status_dropdown(page: Page) -> list[str]:
+    """Открыть фильтр «Статус заказа» и вернуть список его значений.
 
     Поле адресуем по подписи: по `.v-select` находится фильтр компании, а не
     статуса (подробности в комментарии к селекторам).
     """
+    # Дожидаемся, пока таблица перестанет перерисовываться. Без этого шага
+    # дропдаун открывается поверх живого списка: в `test_combined_filters`
+    # статус выбирается ПОСЛЕ поиска, и перерисовка выдачи роняла оба шага
+    # ниже — клик ловил «element is not stable / was detached», а перечисление
+    # опций по одной падало на `inner_text` элемента, которого уже нет
+    # (прогон 32338373909). Одиночный фильтр по статусу этого не показывал:
+    # там таблица к моменту открытия дропдауна уже спокойна.
+    _wait_table_settled(page)
+
     page.locator(STATUS_TRIGGER).click()
     options = page.locator(DROPDOWN_OPTION)
     expect(options.first).to_be_visible(timeout=10_000)
 
-    names = [options.nth(i).inner_text().strip() for i in range(options.count())]
+    # Снимок списка ОДНИМ вызовом: N обращений по `nth(i).inner_text()` — это
+    # N раундтрипов, между которыми список успевает пересобраться.
+    return [
+        n.strip()
+        for n in page.evaluate(
+            "sel => [...document.querySelectorAll(sel)].map(e => e.innerText)",
+            DROPDOWN_OPTION,
+        )
+    ]
+
+
+def _status_options(page: Page) -> list[str]:
+    """Значения фильтра «Статус заказа», не меняя выбранного (дропдаун закрываем)."""
+    names = _open_status_dropdown(page)
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(300)
+    return names
+
+
+def _sample_with_filterable_status(page: Page, orders: list[dict]) -> dict | None:
+    """Первый заказ, чей статус ЕСТЬ в фильтре, и сам список значений фильтра.
+
+    Нужен, потому что подпись статуса в таблице и в фильтре — разные словари:
+    у заказа в таблице стоит «Заказ отменен», а в выпадающем списке такого
+    пункта нет, есть «Отменен». Брать статус первого попавшегося заказа и
+    искать его в фильтре — значит падать всякий раз, когда наверху истории
+    оказывается заказ из непересекающейся части словаря (поймано локально
+    2026-08-20; в CI тот же тест проходил только потому, что наверху лежал
+    заказ с «общим» статусом).
+    """
+    options = _status_options(page)
+    return next((o for o in orders if o["status"] in options), None)
+
+
+def _apply_status(page: Page, wanted: str | None = None) -> str:
+    """Выбрать статус в фильтре «Статус заказа». Возвращает выбранное значение."""
+    names = _open_status_dropdown(page)
     target = wanted or next((n for n in names if n != STATUS_ANY), None)
     assert target in names, f"Статуса {target!r} нет в списке: {names}"
 
-    options.nth(names.index(target)).click()
+    # Кликаем по тексту, а не по индексу: индекс протухает вместе со снимком.
+    option = page.locator(DROPDOWN_OPTION).filter(has_text=re.compile(
+        rf"^\s*{re.escape(target)}\s*$"
+    )).first
+    option.click()
     page.wait_for_timeout(2500)
     return target
 
@@ -320,12 +387,21 @@ def test_filter_by_order_status(page: Page):
     orders = _orders(page)
     if not orders:
         pytest.skip("У учётки нет заказов — фильтровать нечего")
-    status = _apply_status(page, orders[0]["status"])
+
+    # ...и статус, который вообще ЕСТЬ в фильтре: словари подписей в таблице и
+    # в дропдауне пересекаются не полностью (см. `_sample_with_filterable_status`).
+    sample = _sample_with_filterable_status(page, orders)
+    if sample is None:
+        pytest.skip(
+            "Ни один статус из таблицы не представлен в фильтре «Статус заказа» — "
+            "проверять соответствие не на чем"
+        )
+    status = _apply_status(page, sample["status"])
 
     filtered = _orders(page)
     assert filtered, (
         f"Фильтр по статусу «{status}» очистил выдачу, хотя заказы с таким "
-        f"статусом есть (например {orders[0]['number']})"
+        f"статусом есть (например {sample['number']})"
     )
     wrong = [o for o in filtered if o["status"] != status]
     assert not wrong, (
@@ -381,7 +457,16 @@ def test_combined_filters(page: Page):
     orders = _orders(page)
     if not orders:
         pytest.skip("У учётки нет заказов — комбинировать фильтры не на чем")
-    sample = orders[0]
+
+    # Образец берём только среди заказов, чей статус представлен в фильтре:
+    # подписи в таблице и в дропдауне — разные словари (подробности в
+    # `_sample_with_filterable_status`).
+    sample = _sample_with_filterable_status(page, orders)
+    if sample is None:
+        pytest.skip(
+            "Ни один статус из таблицы не представлен в фильтре «Статус заказа» — "
+            "комбинировать фильтры не на чем"
+        )
     number = sample["number"].lstrip("#")
 
     # 1. Поиск по номеру этого заказа
