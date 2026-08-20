@@ -27,6 +27,21 @@ from typing import Callable
 import pytest
 from playwright.sync_api import Locator, Page, expect
 
+from conftest import CART_VIEW_POPUP
+
+
+@pytest.fixture(autouse=True)
+def only_popup_cart_view(require_cart_view):
+    """Весь файл имеет смысл только при активном Виде 1 (корзина поп-апом).
+
+    Симметрично `only_cart_page_view` в test_cart_page.py. Без этого при
+    активном Виде 2 файл давал 9 ERROR вида «locator(".modal__cart.show") —
+    element(s) not found»: поп-апа при Виде 2 нет в принципе, клик по иконке
+    корзины уводит на /ru/cart. Так и утонула ночь 2026-08-20 — 28 ERROR по
+    корзине и чекауту на полностью исправном продукте.
+    """
+    require_cart_view(CART_VIEW_POPUP, "корзина поп-апом")
+
 
 # Товар(ы) выбираются динамически фикстурой `in_stock_products` (conftest.py):
 # если у товара нет стока — берётся следующий доступный.

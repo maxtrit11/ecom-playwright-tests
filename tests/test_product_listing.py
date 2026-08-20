@@ -26,6 +26,8 @@ import re
 import pytest
 from playwright.sync_api import Page, expect
 
+from conftest import CART_VIEW_POPUP
+
 # Категория по умолчанию — из ручного кейса. Русская локаль принципиальна:
 # тексты плашки («Товар был добавлен в корзину») проверяются по-русски.
 CATEGORY_URL = os.environ.get("LISTING_URL", "/ru/serie-partybox")
@@ -272,8 +274,12 @@ def test_add_to_cart_from_listing_shows_notification(page: Page):
 # ===========================================================================
 # Кейс 251: Переход в корзину из плашки на листинге
 # ===========================================================================
-def test_open_cart_from_listing_notification(page: Page):
+def test_open_cart_from_listing_notification(page: Page, require_cart_view):
     """Кнопка «Открыть корзину» в плашке открывает корзину с этим товаром."""
+    # Единственный тест файла, завязанный на поп-ап корзины: при Виде 2
+    # плашка ведёт на /ru/cart, а `.modal__cart` не существует.
+    require_cart_view(CART_VIEW_POPUP, "корзина поп-апом")
+
     # Чистим корзину: иначе товар мог лежать там и до нажатия, и проверка
     # «в корзине именно он» ничего бы не доказывала.
     page.locator(HEADER_CART_BTN).first.click()

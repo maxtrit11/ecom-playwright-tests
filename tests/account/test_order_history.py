@@ -12,7 +12,7 @@ from datetime import datetime
 import pytest
 from playwright.sync_api import Page, expect
 
-from conftest import load_users
+from conftest import CART_VIEW_POPUP, load_users
 
 # Учётки: при отсутствии/незаполненности users.json вернётся шаблон и причина
 # скипа — файл в .gitignore, и на свежем клоне его нет (подробности в conftest).
@@ -643,12 +643,16 @@ def open_order_details(page: Page):
     return details
 
 
-def test_repeat_order_adds_products_to_cart(page: Page):
+def test_repeat_order_adds_products_to_cart(page: Page, require_cart_view):
     """«Повторить заказ» кладёт товары заказа в корзину и показывает тост.
 
     Корзину сначала опустошаем — иначе «товар в корзине» может оказаться
     остатком прошлого прогона, а не результатом повтора.
     """
+    # Единственный тест кабинета, читающий состав корзины из поп-апа:
+    # при Виде 2 поп-апа нет и тест падал на `open_cart` (ночь 2026-08-20).
+    require_cart_view(CART_VIEW_POPUP, "корзина поп-апом")
+
     empty_the_cart(page)
 
     details = open_order_details(page)

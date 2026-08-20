@@ -43,6 +43,19 @@ import time
 import pytest
 from playwright.sync_api import Page, expect
 
+from conftest import CART_VIEW_POPUP
+
+
+@pytest.fixture(autouse=True)
+def only_popup_cart_view(require_cart_view):
+    """Чекаут этого файла живёт внутри поп-апа корзины — только Вид 1.
+
+    При Виде 2 оформление идёт формой на странице /cart (её проверяет
+    test_cart_page.py), поп-апа нет, и все 19 тестов файла падали с
+    «.modal__cart.show не найден» вместо честного скипа (ночь 2026-08-20).
+    """
+    require_cart_view(CART_VIEW_POPUP, "корзина поп-апом")
+
 
 # Товар выбирается динамически фикстурой `in_stock_product` (conftest.py):
 # если у товара нет стока — берётся следующий доступный, без залипания на одном.
