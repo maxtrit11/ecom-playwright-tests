@@ -388,18 +388,56 @@ def credit_product(browser, base_url) -> str:
 #    «<div class="ecom-modal__body"> … intercepts pointer events» и клик уходит
 #    в таймаут. Наблюдалось вживую 2026-07-30 на карточке товара и на предзаказе.
 #    Отдельными тестами промо-попап не покрыт — гасим целиком.
+# 3. `.cookie-banner` — баннер согласия на cookie. Сам баннер на стенде давно,
+#    но БЛОКИРУЮЩИМ он стал в ночь на 2026-08-21, и это доказуемо: прогон
+#    32104493897 (18-го) весь зелёный, в 32338373909 (20-го) эти тесты прошли,
+#    а сегодня они падают 6 из 6 локально на том же коде тестов (диффа между
+#    `1e5a0b7` и `1c9ffb7` в этих кейсах нет). Замерено сегодня: баннер виден
+#    через 0.9 с после загрузки и НЕ уходит сам — ни от скролла, ни от клика,
+#    ни при переходе. Раньше он так себя не вёл, иначе зелёных прогонов бы не
+#    было. Это `position: fixed; bottom: 0` во всю
+#    ширину и высотой ~78px, то есть он накрывает ровно ту полосу, где живут
+#    кнопки фиксированного сайдбара корзины и оформления заказа: замер на живом
+#    stage — кнопка «Оформить заказ»/«Продолжить покупки» занимает y 789…849,
+#    баннер — y 811…873, центр кнопки внутри баннера. Playwright честно пишет
+#    «<div class="cookie-banner__inner"> … intercepts pointer events».
+#    Согласие живёт в localStorage, а каждый тест в CI стартует с чистым
+#    контекстом — поэтому баннер показывается в КАЖДОМ тесте, а не изредка.
+#    Гасим так же, как остальные оверлеи: сам баннер тестами не покрыт.
 # ---------------------------------------------------------------------------
-_OVERLAY_SELECTORS = '[class*="b24-widget"], .ecom-modal'
+_OVERLAY_SELECTORS = '[class*="b24-widget"], .ecom-modal, .cookie-banner'
 
+# ВАЖНО про момент запуска. `add_init_script` выполняется на document-start, а
+# там `document.documentElement` ещё NULL: разметку парсер создаст позже.
+# Прежняя версия скрипта сразу делала `(document.head || document.documentElement)
+# .appendChild(...)` и падала с «TypeError: Cannot read properties of null» —
+# то есть весь блок подавления МОЛЧА не работал ни разу (проверено 2026-08-21:
+# добавленный в скрипт флаг `window.__killerRan` до страницы не доживал).
+# Тесты это не замечали, потому что b24 и промо-попап всплывают редко, а в
+# чекауте виджет и без того сносится вручную (`_hide_b24_widget`). Постоянный
+# cookie-баннер разницу и вскрыл.
+# Поэтому ставим перехват, как только появится корень документа.
 _HIDE_OVERLAYS_SCRIPT = """
 (() => {
   const SEL = '%s';
-  const style = document.createElement('style');
-  style.textContent = SEL + ' { display: none !important; visibility: hidden !important; pointer-events: none !important; }';
-  (document.head || document.documentElement).appendChild(style);
-  const kill = () => document.querySelectorAll(SEL).forEach(el => el.remove());
-  kill();
-  new MutationObserver(kill).observe(document.documentElement, { childList: true, subtree: true });
+  let installed = false;
+  const install = () => {
+    if (installed || !document.documentElement) return;
+    installed = true;
+    const style = document.createElement('style');
+    style.textContent = SEL + ' { display: none !important; visibility: hidden !important; pointer-events: none !important; }';
+    (document.head || document.documentElement).appendChild(style);
+    const kill = () => document.querySelectorAll(SEL).forEach(el => el.remove());
+    kill();
+    new MutationObserver(kill).observe(document.documentElement, { childList: true, subtree: true });
+  };
+  install();
+  if (!installed) {
+    const timer = setInterval(() => {
+      install();
+      if (installed) clearInterval(timer);
+    }, 5);
+  }
 })();
 """ % _OVERLAY_SELECTORS
 
@@ -600,8 +638,20 @@ def open_account_page(page, path: str = "/ru/account") -> None:
 
     Сразу после логина приложение делает собственный редирект, и `goto` в этот
     момент прилетает ERR_ABORTED — его гасит `goto_resilient`.
+
+    Отдельная беда — гонка с самим приложением: если зайти в кабинет слишком
+    быстро после входа, гард раздела ещё не видит сессию и выкидывает на
+    `/?login=true` — навигация при этом ФОРМАЛЬНО успешна, `goto` не падает, и
+    тест валится позже на «URL не похож на account». Ловилось в прогоне
+    32441454012 на первом же тесте файла смены пароля (остальные три теста с
+    той же фикстурой прошли — значит, продукт исправен, это чистая гонка).
+    Поэтому проверяем результат и повторяем заход.
     """
-    goto_resilient(page, path)
+    for _ in range(3):
+        goto_resilient(page, path)
+        if "login=true" not in page.url:
+            return
+        page.wait_for_timeout(2_000)
 
 
 def logout(page) -> None:
