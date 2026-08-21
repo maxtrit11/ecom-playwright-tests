@@ -69,19 +69,24 @@ def test_open_registration_popup_with_all_elements(page: Page):
     )
     expect(active_tab).to_contain_text("Физическое лицо")
 
-    # Отображаются все поля формы
-    expect(page.locator('input[placeholder="Ваше имя"]')).to_be_visible()
-    expect(page.locator('input[placeholder="Ваше фамилия"]')).to_be_visible()
-    expect(
-        page.locator('input[placeholder="Введи e-mail адрес"]').first
-    ).to_be_visible()
-    # На stage в форме два <input type=tel id="phone"> (оригинальный .phone +
-    # сгенерированный плагином intl-tel-input .iti__tel-input). Видимое
-    # пользователю поле — именно .iti__tel-input, его и проверяем/заполняем,
-    # иначе strict-mode падает на 2 совпадениях.
-    expect(page.locator('input[type="tel"].iti__tel-input')).to_be_visible()
+    # Поля ищем ВНУТРИ поп-апа, а не по всей странице: на главной живёт ещё и
+    # промо-модалка «подарок» (.modal__gift) со своим полем телефона. Как только
+    # она хоть раз показалась, intl-tel-input вешает .iti__tel-input и на неё —
+    # и общестраничный селектор находит два поля, падая на strict mode
+    # (прогон 32455950259). Внутри формы регистрации поле ровно одно.
+    form = page.locator(".modal__authentification__ecom-content")
 
-    password_fields = page.locator('input[type="password"]')
+    # Отображаются все поля формы
+    expect(form.locator('input[placeholder="Ваше имя"]')).to_be_visible()
+    expect(form.locator('input[placeholder="Ваше фамилия"]')).to_be_visible()
+    expect(
+        form.locator('input[placeholder="Введи e-mail адрес"]').first
+    ).to_be_visible()
+    # Видимое пользователю поле телефона — сгенерированное плагином
+    # .iti__tel-input, а не исходный <input id="phone">.
+    expect(form.locator('input[type="tel"].iti__tel-input')).to_be_visible()
+
+    password_fields = form.locator('input[type="password"]')
     expect(password_fields).to_have_count(2)
     for i in range(2):
         expect(password_fields.nth(i)).to_be_visible()

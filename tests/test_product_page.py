@@ -51,9 +51,10 @@ GALLERY_THUMBS = ".slider__thumbs.newType"
 # Слайдер фото: и мини-фото, и главное фото лежат в одинаковых `.slider__image`,
 # отличаются только размером — главное берём по ширине (см. `_main_slider_image`).
 SLIDER_IMAGE = ".product__slider .slider__image"
-# Лайтбокс полноразмерного фото — Fancybox
+# Лайтбокс полноразмерного фото — Fancybox. Контейнеров на странице может
+# оказаться больше одного (см. `test_open_image_full_size`), поэтому искать
+# фото нужно ВНУТРИ конкретного контейнера, а не общим селектором по странице.
 LIGHTBOX = ".fancybox__container"
-LIGHTBOX_IMAGE = f"{LIGHTBOX} img.fancybox-image"
 
 # Попапы (точные селекторы найдены через MCP)
 MODAL_CREDIT = ".modal__credit.show"
@@ -248,11 +249,17 @@ def test_open_image_full_size(page: Page):
 
     main_image.click()
 
-    lightbox = page.locator(LIGHTBOX)
+    # Главное фото — слайд карусели, и все 8 слайдов сидят в одной fancybox-группе
+    # `product-gallery`. Под нагрузкой в CI клик успевает открыть галерею дважды,
+    # и в DOM оказывается два `.fancybox__container` (#fancybox-1 и #fancybox-2,
+    # оба `is-opening`) — общий селектор падал на strict mode (прогон 32455950259).
+    # Верхний по z-order — последний в DOM, с ним пользователь и взаимодействует.
+    page.wait_for_selector(LIGHTBOX, timeout=10_000)
+    lightbox = page.locator(LIGHTBOX).last
     expect(lightbox).to_be_visible(timeout=10_000)
 
     # Фото открылось именно В ПОЛНОМ РАЗМЕРЕ — оно шире, чем было на странице
-    full_image = page.locator(LIGHTBOX_IMAGE).first
+    full_image = lightbox.locator("img.fancybox-image").first
     expect(full_image).to_be_visible(timeout=10_000)
     full_width = full_image.bounding_box()["width"]
     assert full_width > inline_width, (
@@ -261,12 +268,18 @@ def test_open_image_full_size(page: Page):
     )
 
     # Затемнение фона и заблокированный скролл — признак модального режима
-    expect(page.locator(f"{LIGHTBOX} .fancybox__backdrop")).to_be_visible()
+    expect(lightbox.locator(".fancybox__backdrop")).to_be_visible()
     expect(page.locator("body")).to_have_css("overflow", "hidden")
 
-    # Escape закрывает просмотр и возвращает страницу в рабочее состояние
-    page.keyboard.press("Escape")
-    expect(lightbox).to_have_count(0, timeout=10_000)
+    # Escape закрывает просмотр и возвращает страницу в рабочее состояние.
+    # Каждое нажатие закрывает один экземпляр галереи, поэтому жмём, пока в DOM
+    # что-то остаётся: иначе при двойном открытии тест уходил бы в ложное падение.
+    for _ in range(3):
+        if page.locator(LIGHTBOX).count() == 0:
+            break
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(700)
+    expect(page.locator(LIGHTBOX)).to_have_count(0, timeout=10_000)
     expect(page.locator("body")).to_have_css("overflow", "visible", timeout=10_000)
     expect(page.locator(H1)).to_be_visible()
 

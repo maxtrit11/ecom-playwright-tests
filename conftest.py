@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -66,6 +67,34 @@ def wait_hydrated(page, timeout: int | None = None) -> None:
 # заново. SPA-переходы по клику сюда не входят — там приложение уже живое.
 _NAVIGATION_METHODS = ("goto", "reload", "go_back", "go_forward")
 
+# ---------------------------------------------------------------------------
+# Повтор навигации при обрыве связи со стендом.
+#
+# Стенд изредка «моргает» на секунду: goto падает с ERR_CONNECTION_REFUSED, а
+# соседние тесты в ту же минуту проходят (прогон 32455950259, Кейс 244 — обрыв
+# случился прямо в фикстуре, до единой проверки). Такое падение ничего не
+# говорит о продукте, но выглядит в отчёте как настоящая ошибка и каждый раз
+# требует ручного разбора. Ретраим ТОЛЬКО транспортные обрывы: 404, редиректы и
+# таймауты ожидания элементов сюда не попадают и падают как раньше.
+# ---------------------------------------------------------------------------
+_TRANSIENT_NAV_ERRORS = (
+    "ERR_CONNECTION_REFUSED",
+    "ERR_CONNECTION_RESET",
+    "ERR_CONNECTION_CLOSED",
+    "ERR_CONNECTION_TIMED_OUT",
+    "ERR_EMPTY_RESPONSE",
+    "ERR_SOCKET_NOT_CONNECTED",
+    "ERR_NAME_NOT_RESOLVED",
+    "ERR_NETWORK_CHANGED",
+)
+_NAV_RETRIES = 2
+_NAV_RETRY_DELAY_S = 3.0
+
+
+def _is_transient_nav_error(error: Exception) -> bool:
+    message = str(error)
+    return any(marker in message for marker in _TRANSIENT_NAV_ERRORS)
+
 
 @pytest.fixture(autouse=True)
 def _hydrate_after_navigation(page):
@@ -73,18 +102,31 @@ def _hydrate_after_navigation(page):
 
     Обёртка на уровне conftest, а не правка каждого теста: иначе один забытый
     `goto` возвращает ложное падение, которое выглядит как баг продукта.
+    Здесь же — повтор навигации при обрыве связи со стендом.
     """
 
-    def wrap(original):
+    def wrap(original, name):
         def wrapper(*args, **kwargs):
-            result = original(*args, **kwargs)
+            for attempt in range(_NAV_RETRIES + 1):
+                try:
+                    result = original(*args, **kwargs)
+                    break
+                except Exception as error:
+                    if attempt == _NAV_RETRIES or not _is_transient_nav_error(error):
+                        raise
+                    print(
+                        f"[nav-retry] {name}: стенд оборвал соединение "
+                        f"(попытка {attempt + 1} из {_NAV_RETRIES + 1}), "
+                        f"повтор через {_NAV_RETRY_DELAY_S:.0f} с"
+                    )
+                    time.sleep(_NAV_RETRY_DELAY_S)
             wait_hydrated(page)
             return result
 
         return wrapper
 
     for name in _NAVIGATION_METHODS:
-        setattr(page, name, wrap(getattr(page, name)))
+        setattr(page, name, wrap(getattr(page, name), name))
     yield
 
 
