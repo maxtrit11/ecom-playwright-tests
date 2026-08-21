@@ -201,14 +201,23 @@ def test_duplicate_email_shows_error(page: Page):
         "maxim.turcan1@gmail.com"
     )
 
-    # Нажать кнопку «Зарегистрироваться»
-    form.locator('button[type="submit"]').first.click()
+    # Нажать кнопку «Зарегистрироваться».
+    # Сообщение об ошибке рисуется по ОТВЕТУ сервера, поэтому ждём сам ответ, а
+    # не фиксированные 10 с: под нагрузкой в CI регистрация отвечала дольше, и
+    # тест падал с «element(s) not found» на исправном продукте
+    # (прогон 32462281373). Проверено вживую: текст приходит именно в
+    # `.validation` внутри модалки, то есть искали в правильном месте.
+    with page.expect_response(
+        lambda r: REGISTER_ENDPOINT in r.url and r.request.method == "POST",
+        timeout=45_000,
+    ):
+        form.locator('button[type="submit"]').first.click()
 
     # Отображается сообщение, что Email уже используется
     modal = page.locator(".modal__authentification__ecom-content")
     expect(modal.locator(".validation:visible")).to_contain_text(
         "Пользователь с указанным адресом электронной почты уже существует",
-        timeout=10_000,
+        timeout=15_000,
     )
 
     # Поп-ап остаётся открытым

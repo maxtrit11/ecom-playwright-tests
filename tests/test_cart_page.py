@@ -37,6 +37,7 @@ import time
 
 import pytest
 from playwright.sync_api import Locator, Page, expect
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from conftest import CART_VIEW_PAGE
 
@@ -148,14 +149,24 @@ def cart_with_product(page: Page, in_stock_product: str) -> Page:
     page.set_viewport_size({"width": 1920, "height": 1080})
     page.context.clear_cookies()
 
-    page.goto(in_stock_product, wait_until="domcontentloaded", timeout=60_000)
-    expect(page.locator("h1")).to_be_visible(timeout=20_000)
-    add = page.locator(BTN_ADD_CART).first
-    expect(add).to_be_visible(timeout=20_000)
-    add.click()
-    page.wait_for_timeout(1500)
+    # Кладём товар с повтором. Кнопка «В корзину» видна раньше, чем Vue вешает
+    # на неё обработчик, и первый клик после `domcontentloaded` регулярно
+    # теряется. Молча: исключения нет, корзина просто остаётся пустой — и
+    # падает не сам тест, а фикстура, с невнятным «.plank-card не найден»
+    # (прогон 32462281373, Кейс «Вкладки способов оплаты»). Проверяем результат
+    # по самой корзине, а не по факту клика.
+    for _ in range(3):
+        page.goto(in_stock_product, wait_until="domcontentloaded", timeout=60_000)
+        expect(page.locator("h1")).to_be_visible(timeout=20_000)
+        add = page.locator(BTN_ADD_CART).first
+        expect(add).to_be_visible(timeout=20_000)
+        add.click()
+        page.wait_for_timeout(1500)
 
-    page.goto(CART_URL, wait_until="domcontentloaded", timeout=60_000)
+        page.goto(CART_URL, wait_until="domcontentloaded", timeout=60_000)
+        if _appears(page.locator(ROW), timeout=15_000):
+            break
+
     expect(page.locator(f"{ROW}").first).to_be_visible(timeout=30_000)
     yield page
 
@@ -189,8 +200,20 @@ def test_header_cart_leads_to_cart_page(cart_with_product: Page):
     # `networkidle` на этом стенде бесполезно, сеть не затихает). Одиночный
     # клик давал «URL не сменился за 30 с» на исправном продукте
     # (прогон 32338373909, отчёт Вида 2).
-    for _ in range(3):
-        page.locator(HEADER_CART_BTN).first.click()
+    #
+    # Каждой попытке даём короткий срок. С дефолтными 45 с на действие цикл был
+    # бесполезен: кнопку временно накрывала шапка формы заказа
+    # (`<div class="head">`), первый же клик висел все 45 с и валил тест, так и
+    # не дойдя до второй попытки (прогон 32462281373). Последняя попытка идёт
+    # через `force`: если перекрытие никуда не делось, пусть тест падает на
+    # осмысленной проверке URL, а не на таймауте клика.
+    for attempt in range(3):
+        try:
+            page.locator(HEADER_CART_BTN).first.click(
+                timeout=10_000, force=(attempt == 2)
+            )
+        except PlaywrightTimeoutError:
+            continue
         try:
             expect(page).to_have_url(re.compile(r"/cart"), timeout=10_000)
             break
