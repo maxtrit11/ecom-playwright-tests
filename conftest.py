@@ -162,7 +162,7 @@ def hydrated():
 CART_VIEW_POPUP = "default"
 CART_VIEW_PAGE = "casadeltabaco"
 
-_CART_VIEW_JS = (
+CART_VIEW_JS = (
     "() => window.__NUXT__?.state?.global?.globalSettings"
     "?.mainUiInterface?.cart_button_catalog_view_type ?? null"
 )
@@ -184,7 +184,7 @@ def cart_view(browser, base_url) -> str:
         # Без этого детектор определял вид 1 при активном виде 2, и весь файл
         # тестов молча уходил в skip — прогон при этом выглядел успешным.
         page.goto("/ru?dev_mode=true", wait_until="domcontentloaded", timeout=60_000)
-        value = page.evaluate(_CART_VIEW_JS)
+        value = page.evaluate(CART_VIEW_JS)
         if not value:
             raise RuntimeError(
                 "Не удалось прочитать вид корзины из window.__NUXT__ — "

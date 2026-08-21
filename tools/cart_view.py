@@ -53,6 +53,19 @@ FRONT_JS = (
     "?.mainUiInterface?.cart_button_catalog_view_type ?? null"
 )
 
+# Страница-проба для КЭША. `read_front_view` спрашивает фронт через
+# `?dev_mode=true`, а он кэш обходит — то есть подтверждает, что настройка
+# доехала, но ничего не говорит про закэшированные страницы. Разница не
+# теоретическая: 2026-08-21 после переключения на Вид 2 `/ru/product/...`
+# (X-Cache: MISS) отдавал уже `casadeltabaco`, а `/ru/acustica-portabila`
+# (X-Cache: HIT, возраст 319 c) — всё ещё `default`. На такой странице кнопка
+# корзины в шапке открывает поп-ап Вида 1 вместо перехода на /cart, и тест
+# `test_header_cart_leads_to_cart_page` падал через раз. Обойти кэш запросом
+# нельзя: любой лишний query-параметр на категории даёт 404. Поэтому пробуем
+# ОБЫЧНЫЙ запрос к кэшируемой категории и, если вид старый, сбрасываем кэш ещё раз.
+CACHE_PROBE_PATH = os.environ.get("CART_VIEW_CACHE_PROBE", "/ru/acustica-portabila")
+CACHE_CLEAR_ATTEMPTS = 3
+
 VIEWS = {
     "default": "Вид 1 (поп-ап)",
     "casadeltabaco": "Вид 2 (отдельная страница)",
@@ -92,6 +105,21 @@ def read_front_view(browser) -> str | None:
         return page.evaluate(FRONT_JS)
     except Exception as error:
         log(f"опрос фронта не удался: {type(error).__name__}")
+        return None
+    finally:
+        ctx.close()
+
+
+def read_cached_view(browser, path: str = CACHE_PROBE_PATH) -> str | None:
+    """Что отдаётся на КЭШИРУЕМОЙ странице обычным запросом, без обхода кэша."""
+    ctx = browser.new_context()
+    page = ctx.new_page()
+    try:
+        page.goto(f"{FRONT}{path}", wait_until="domcontentloaded", timeout=60_000)
+        page.wait_for_timeout(800)
+        return page.evaluate(FRONT_JS)
+    except Exception as error:
+        log(f"опрос кэшируемой страницы не удался: {type(error).__name__}")
         return None
     finally:
         ctx.close()
@@ -175,6 +203,7 @@ def set_view(value: str) -> int:
             log(f"  проверка ({elapsed:.0f}c): {actual!r}")
             if actual == value:
                 log(f"применилось за {elapsed:.0f}c")
+                _wait_cache_purged(browser, page, value)
                 browser.close()
                 return 0
             time.sleep(POLL_EVERY_S)
@@ -182,6 +211,36 @@ def set_view(value: str) -> int:
         log(f"НЕ применилось за {APPLY_TIMEOUT_S}c — вероятно, кэш не сбросился")
         browser.close()
         return 1
+
+
+def _wait_cache_purged(browser, page, value: str) -> None:
+    """Добиться, чтобы новый вид отдавался и с КЭШИРУЕМОЙ страницы.
+
+    Настройка уже применилась (это проверено выше запросом в обход кэша), так
+    что упереться тут в старую копию — не повод валить прогон: шаг «Run cart
+    view 2 tests» запускается только при `outcome == 'success'`, и возврат 1
+    оставил бы Вид 2 непроверенным целиком. Поэтому пробуем сбросить кэш ещё
+    раз, а если не помогло — громко предупреждаем и идём дальше. Тест, которому
+    достанется устаревшая страница, скипнется сам с таким же объяснением.
+    """
+    for attempt in range(1, CACHE_CLEAR_ATTEMPTS + 1):
+        cached = read_cached_view(browser)
+        if cached == value:
+            log(f"кэшируемая страница {CACHE_PROBE_PATH} отдаёт {value!r}")
+            return
+        log(
+            f"  кэш ещё старый на {CACHE_PROBE_PATH}: {cached!r} вместо {value!r} "
+            f"(попытка {attempt} из {CACHE_CLEAR_ATTEMPTS})"
+        )
+        if attempt < CACHE_CLEAR_ATTEMPTS:
+            _clear_cache(page)
+            time.sleep(POLL_EVERY_S)
+
+    log(
+        f"ВНИМАНИЕ: {CACHE_PROBE_PATH} по-прежнему отдаётся из кэша со старым "
+        f"видом. Настройка применена, но тесты на кэшируемых страницах увидят "
+        f"прошлый вид корзины и скипнутся."
+    )
 
 
 def main() -> int:

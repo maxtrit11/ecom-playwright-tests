@@ -39,7 +39,7 @@ import pytest
 from playwright.sync_api import Locator, Page, expect
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-from conftest import CART_VIEW_PAGE
+from conftest import CART_VIEW_JS, CART_VIEW_PAGE
 
 CART_URL = "/ru/cart"
 
@@ -194,6 +194,24 @@ def test_header_cart_leads_to_cart_page(cart_with_product: Page):
     """Кнопка корзины в шапке ведёт на страницу корзины."""
     page = cart_with_product
     page.goto(CATEGORY_URL, wait_until="domcontentloaded", timeout=60_000)
+
+    # Единственный тест файла, который заходит на КЭШИРУЕМУЮ страницу: всё
+    # остальное живёт на /cart, а его nginx не кэширует. Вид корзины приезжает
+    # в SSR-разметке, поэтому страница, снятая в кэш до переключения, ведёт
+    # себя по Виду 1 — кнопка открывает поп-ап `.modal__cart` вместо перехода
+    # на /cart. Проверено вживую 2026-08-21: при активном Виде 2
+    # `/ru/product/...` (X-Cache: MISS) отдавал `casadeltabaco`, а эта категория
+    # (X-Cache: HIT, возраст 319 c) — `default`, и клик открывал поп-ап.
+    # Обойти кэш из теста нечем: лишний query-параметр на категории даёт 404.
+    # Гонять проверку по чужой конфигурации бессмысленно — честнее скипнуть с
+    # внятной причиной, чем красить прогон в красный из-за кэша стенда.
+    rendered_view = page.evaluate(CART_VIEW_JS)
+    if rendered_view != CART_VIEW_PAGE:
+        pytest.skip(
+            f"страница категории отдана из кэша со старым видом корзины "
+            f"({rendered_view!r} вместо {CART_VIEW_PAGE!r}) — кнопка на ней "
+            f"работает по прошлой конфигурации, проверять нечего"
+        )
 
     # Клик повторяем: первый после `domcontentloaded` регулярно теряется —
     # обработчик вешается только на гидрации, а её мы не ждём (ждать
