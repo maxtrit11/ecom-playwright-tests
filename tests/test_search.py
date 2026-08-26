@@ -496,28 +496,22 @@ def test_add_to_cart_from_search_page(page: Page):
     товар добавляется в корзину."""
     go_to_search_results_page(page, EXISTING_QUERY)
 
-    page.wait_for_timeout(1000)
-    # Берём именно карточную кнопку «В корзину» (.btn__add_cart),
-    # а не .btn__cart из шапки (она ведёт на /cart и счётчик не меняется)
-    cart_btn = page.locator(
-        ".btn__add_cart, button:has-text('В корзину'), button:has-text('Adaugă în coș')"
-    )
+    # Карточки на /search монтируются ПОСЛЕ гидрации. Раньше здесь стоял
+    # `wait_for_timeout(1000)` + мгновенный `count()`, и тест уходил в skip
+    # («Кнопка «В корзину» не найдена») на полностью исправной странице —
+    # проверено вживую 2026-08-26: на /search?query=JBL 15 карточек и 15
+    # видимых кнопок. Skip маскировал бы и настоящую поломку, поэтому ждём
+    # кнопку через expect (auto-retry) и падаем, если её нет.
+    card = page.locator(".product__item").first
+    cart_btn = card.locator("button.btn__add_cart")
+    expect(cart_btn).to_be_visible(timeout=15_000)
 
-    if cart_btn.count() > 0 and cart_btn.first.is_visible():
-        cart_btn.first.click()
-        page.wait_for_timeout(1500)
+    cart_btn.click()
 
-        # Проверяем что корзина обновилась (счётчик > 0 или уведомление)
-        cart_counter = page.locator(
-            ".btn__cart .counter, .btn__cart span, [class*='cart'] [class*='counter']"
-        )
-        notification = page.locator(
-            "[class*='notification'], [class*='toast'], [class*='alert']"
-        )
-        cart_updated = (
-            (cart_counter.count() > 0 and cart_counter.first.is_visible())
-            or notification.count() > 0
-        )
-        assert cart_updated, "Товар не добавился в корзину"
-    else:
-        pytest.skip("Кнопка «В корзину» не найдена")
+    # Признак добавления — кнопка в ЭТОЙ ЖЕ карточке подменяется счётчиком
+    # количества («− 1 +»). Он стабилен, в отличие от тоста
+    # `.notification.cart.show`, который живёт пару секунд и пропадает.
+    # На счётчик в шапке опираться нельзя: у `.btn__cart` бейджа в DOM нет.
+    # `.first` обязателен: внутри карточки счётчик отрисован дважды
+    # (десктопный и мобильный дубли) — без него strict mode валит ассерт.
+    expect(card.locator(".product-counter").first).to_be_visible(timeout=10_000)

@@ -42,8 +42,17 @@ H1 = "h1"
 
 # Кнопка «Предзаказ» (заменяет «В корзину»); :visible отсеивает mobile-дубль
 BTN_PREORDER = "button.btn__add_cart_preorder:visible"
-# Обычная активная «В корзину» (для товара СО стоком) — НЕ должна присутствовать
-BTN_ADD_CART_REAL = "button.btn__add_cart:not(.btn__add_cart_preorder)"
+# Обычная активная «В корзину» (для товара СО стоком) — НЕ должна присутствовать.
+# ОБЯЗАТЕЛЬНО ограничиваем блоками САМОГО товара: внизу страницы висят карусели
+# рекомендаций, и каждая карточка соседнего товара несёт свою `button.btn__add_cart`
+# (.swiper-slide.product__item > … > .actions). Без привязки к контейнеру тест
+# насчитывал 4 чужие кнопки и падал на исправном продукте (2026-08-26).
+# Блока два: основной `.primary__product_info` и нижняя панель `.bottom-buy-bar`
+# (мобильный дубль, скрытый на десктопе).
+BTN_ADD_CART_REAL = (
+    ".primary__product_info button.btn__add_cart:not(.btn__add_cart_preorder), "
+    ".bottom-buy-bar button.btn__add_cart:not(.btn__add_cart_preorder)"
+)
 
 # Активная цена (есть только у товара со стоком)
 PRICE_NEW = ".price.new__price"
