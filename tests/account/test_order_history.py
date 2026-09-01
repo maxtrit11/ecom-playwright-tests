@@ -104,11 +104,18 @@ SIDEBAR_ITEM = ".account-sidebar__list__item"
 @pytest.fixture(autouse=True)
 def login_and_open_order_history(page: Page):
     page.goto("/", wait_until="domcontentloaded", timeout=60_000)
-    page.wait_for_load_state("networkidle", timeout=30_000)
+    # Отдельный `networkidle` тут был дублем: гидрацию после `goto` уже ждёт
+    # autouse-обёртка `_hydrate_after_navigation` в conftest, и она же делает
+    # networkidle, но мягко. Жёсткий дубль на главной с её ленивыми
+    # каруселями только съедал бюджет времени до ожидания шапки.
 
-    # Открыть поп-ап авторизации
+    # Открыть поп-ап авторизации.
+    # 30 с, а не 15: в часовом прогоне CI шапка на главной рисуется заметно
+    # медленнее, и фикстура сорвалась ровно здесь (run 33492827958) — при том
+    # что 7 соседних тестов файла с этой же фикстурой в том же прогоне прошли,
+    # изолированно тест зелёный, а кнопка в браузере на месте и видима.
     auth_btn = page.locator(".btn__action.btn__auth")
-    auth_btn.wait_for(state="visible", timeout=15_000)
+    auth_btn.wait_for(state="visible", timeout=30_000)
     auth_btn.click(force=True)
 
     modal = page.locator(".modal__authentification__ecom-content").first
