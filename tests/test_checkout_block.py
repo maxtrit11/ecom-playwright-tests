@@ -11,7 +11,8 @@
       с текстом «Продолжить покупки» (отдельно от такой же кнопки в коше)
 - Личные данные:
     * Полное имя: input[placeholder="Введи имя и фамилию"]
-    * Телефон: input#phone (тип tel)
+    * Телефон: единственный input[type="tel"] в форме (id плавает: был
+      `phone`, стал `checkout-phone` — см. комментарий у INPUT_PHONE)
     * E-mail: input[placeholder="Введи e-mail адрес"]
     * Чекбокс «Не перезванивать»: input#dontCallMe
       — при включении появляется поле
@@ -84,7 +85,13 @@ BTN_CONTINUE_SHOPPING = f"{SIDEBAR_FIXED} button.btn__secondary"
 
 # Личные данные
 INPUT_NAME = f'{CHECKOUT_FORM} input[placeholder="Введи имя и фамилию"]'
-INPUT_PHONE = f'{CHECKOUT_FORM} input#phone'
+# Телефон ищем по типу поля, а НЕ по id: 01.09.2026 фронт переименовал
+# `id="phone"` → `id="checkout-phone"`, и прогон встал на 45-секундном
+# таймауте клика. В форме ровно один `input[type="tel"]` (проверено в
+# браузере на свежей загрузке с cache-buster), так что селектор однозначный
+# и переживёт следующее переименование. Поп-апы one-click/кредита/предзаказа
+# уже искали телефон именно так — они этим изменением и не сломались.
+INPUT_PHONE = f'{CHECKOUT_FORM} input[type="tel"]'
 INPUT_EMAIL = f'{CHECKOUT_FORM} input[placeholder="Введи e-mail адрес"]'
 CHK_DONT_CALL = f'{CHECKOUT_FORM} input#dontCallMe'
 INPUT_MESSENGER = f'{CHECKOUT_FORM} input[placeholder*="мессенджер" i]'

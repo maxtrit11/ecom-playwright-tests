@@ -73,7 +73,10 @@ FREE_DELIVERY = ".order-form__free-delivery-info"
 
 # Поля заказа
 INPUT_NAME = 'input[placeholder="Введите имя и фамилию"]'
-INPUT_PHONE = "#phone"
+# По типу поля, а не по id: 01.09.2026 фронт переименовал `id="phone"`
+# (в модалке чекаута стал `checkout-phone`), и оба happy-path теста встали
+# на таймауте. Тип `tel` переживёт следующее переименование.
+INPUT_PHONE = 'input[type="tel"]'
 INPUT_EMAIL = 'input[placeholder="example@email.com"]'
 INPUT_STREET = 'input[placeholder="например: Авиатор"]'
 BTN_PLACE_ORDER = f"{SUBMIT_AREA} button"
