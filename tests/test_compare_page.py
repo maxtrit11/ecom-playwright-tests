@@ -134,6 +134,27 @@ def _btn_with_text(page: Page, text_re: re.Pattern):
     return page.locator("button.btn__link").filter(has_text=text_re).first
 
 
+def _open_compare(page: Page):
+    """Открыть /compare и дождаться таблицы сравнения, с перезагрузкой.
+
+    Под нагрузкой страница изредка отрисовывает заглушку «Нет товаров для
+    сравнения» вместо таблицы, и `.compare__page` не появляется вовсе —
+    ровно так сорвалась фикстура в прогоне 33502583603. Список товаров к
+    этому моменту заведомо непустой: `_add_to_compare` иначе упал бы раньше
+    со своим сообщением. Состояние сравнения живёт в двух местах —
+    `localStorage['compare']` (полный объект товара) и куке `compare`
+    (только id + категория), — и перезагрузка даёт приложению их сверить.
+    """
+    for attempt in range(3):
+        page.goto(COMPARE_URL, wait_until="domcontentloaded", timeout=60_000)
+        try:
+            expect(page.locator(COMPARE_PAGE)).to_be_visible(timeout=20_000)
+            return
+        except AssertionError:
+            if attempt == 2:
+                raise
+
+
 @pytest.fixture
 def empty_compare(page: Page):
     """Чистый стейт сравнения. Открывает /compare с пустым списком."""
@@ -157,8 +178,7 @@ def two_same_category(page: Page):
     _add_to_compare(page, PRODUCT_A_URL)
     _add_to_compare(page, PRODUCT_B_URL)
 
-    page.goto(COMPARE_URL, wait_until="domcontentloaded", timeout=60_000)
-    expect(page.locator(COMPARE_PAGE)).to_be_visible(timeout=15_000)
+    _open_compare(page)
     expect(page.locator(COMPARE_ITEM).first).to_be_visible(timeout=15_000)
     return page
 
@@ -174,8 +194,7 @@ def two_different_categories(page: Page):
     _add_to_compare(page, PRODUCT_A_URL)
     _add_to_compare(page, PRODUCT_OTHER_URL)
 
-    page.goto(COMPARE_URL, wait_until="domcontentloaded", timeout=60_000)
-    expect(page.locator(COMPARE_PAGE)).to_be_visible(timeout=15_000)
+    _open_compare(page)
     # Дожидаемся гидрации сайдбара с радио-категориями
     page.wait_for_selector(
         ".compare__categories input[type='radio'][id^='radio-']",
