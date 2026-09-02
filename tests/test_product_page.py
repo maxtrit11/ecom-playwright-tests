@@ -14,6 +14,8 @@ import re
 import pytest
 from playwright.sync_api import Page, expect
 
+from conftest import click_until, wait_until
+
 
 # Товар используется как эталонный для всех тестов
 PRODUCT_SLUG = "jbl-partybox-on-the-go-2"
@@ -172,9 +174,11 @@ def test_add_to_compare_increments_header_counter(page: Page):
     btn = page.locator(BTN_COMPARE).first
 
     btn.click()
-    page.wait_for_timeout(800)
-
-    count_after = _header_compare_count(page)
+    count_after = wait_until(
+        page,
+        lambda: _header_compare_count(page),
+        lambda value: value != count_before,
+    )
     assert count_after == count_before + 1, (
         f"Счётчик сравнения не увеличился: {count_before} → {count_after}"
     )
@@ -195,9 +199,11 @@ def test_add_to_favorites_increments_header_counter(page: Page):
 
     btn = page.locator(BTN_FAVORITE).first
     btn.click()
-    page.wait_for_timeout(800)
-
-    count_after = _header_favorite_count(page)
+    count_after = wait_until(
+        page,
+        lambda: _header_favorite_count(page),
+        lambda value: value != count_before,
+    )
     assert count_after == count_before + 1, (
         f"Счётчик избранного не увеличился: {count_before} → {count_after}"
     )
@@ -393,9 +399,14 @@ def test_add_to_cart_updates_header_sum(page: Page):
     assert price > 0, f"Не удалось распарсить цену со страницы: {price_text}"
 
     page.locator(BTN_ADD_CART).first.click()
-    page.wait_for_timeout(1000)
-
-    sum_after = _header_cart_sum(page)
+    # Ждём саму сумму, а не «секунду по часам»: под нагрузкой XHR корзины
+    # приходит позже, и фиксированной паузы не хватало (падало и в
+    # параллельном прогоне, и в последовательном).
+    sum_after = wait_until(
+        page,
+        lambda: _header_cart_sum(page),
+        lambda value: value != sum_before,
+    )
     assert sum_after == sum_before + price, (
         f"Сумма в шапке не обновилась корректно: {sum_before} + {price} ≠ {sum_after}"
     )
@@ -406,8 +417,11 @@ def test_add_to_cart_updates_header_sum(page: Page):
 # ===========================================================================
 def test_open_cart_from_header(page: Page):
     """В корзину → клик по иконке корзины в шапке → открывается корзина с товаром."""
+    sum_before = _header_cart_sum(page)
     page.locator(BTN_ADD_CART).first.click()
-    page.wait_for_timeout(3000)
+    # Ждём, что товар реально доехал до корзины: клик по иконке шапки раньше
+    # этого момента открывает пустую корзину, и тест краснеет на исправном сайте.
+    wait_until(page, lambda: _header_cart_sum(page), lambda value: value != sum_before)
 
     # Кликаем по видимой иконке корзины в шапке (есть скрытый mobile-дубль)
     page.evaluate(
@@ -417,7 +431,6 @@ def test_open_cart_from_header(page: Page):
             visible?.click();
         }"""
     )
-    page.wait_for_timeout(2000)
 
     # Сайт может открыть drawer/popup или перейти на /ru/cart.
     # На стейдже это side-drawer .cart__sidebar (с детьми .cart__products /
@@ -427,6 +440,14 @@ def test_open_cart_from_header(page: Page):
         "[class*='basket'][class*='show'], "
         ".cart__sidebar, .cart__products, .cart__items-container"
     )
+    def _cart_opened() -> bool:
+        return "cart" in page.url or (
+            drawer_locator.count() > 0 and drawer_locator.first.is_visible()
+        )
+
+    # Ждём открытия по факту, а не 2 с наугад: под нагрузкой дровер рисуется позже.
+    wait_until(page, _cart_opened, lambda opened: opened)
+
     url_changed = "cart" in page.url
     drawer_visible = drawer_locator.count() > 0 and drawer_locator.first.is_visible()
 
@@ -435,7 +456,11 @@ def test_open_cart_from_header(page: Page):
     )
 
     # В корзине должен быть товар
-    assert "JBL" in page.locator("body").text_content()
+    assert "JBL" in wait_until(
+        page,
+        lambda: page.locator("body").text_content() or "",
+        lambda text: "JBL" in text,
+    )
 
 
 # ===========================================================================
@@ -476,14 +501,21 @@ def test_remove_from_favorites_decrements_counter(page: Page):
     """Сначала добавить в избранное, затем повторный клик → счётчик уменьшается."""
     btn = page.locator(BTN_FAVORITE).first
 
+    count_before = _header_favorite_count(page)
     btn.click()
-    page.wait_for_timeout(800)
-    count_after_add = _header_favorite_count(page)
+    count_after_add = wait_until(
+        page,
+        lambda: _header_favorite_count(page),
+        lambda value: value > count_before,
+    )
     assert count_after_add >= 1, "Товар не добавился в избранное"
 
     btn.click()
-    page.wait_for_timeout(800)
-    count_after_remove = _header_favorite_count(page)
+    count_after_remove = wait_until(
+        page,
+        lambda: _header_favorite_count(page),
+        lambda value: value < count_after_add,
+    )
     assert count_after_remove == count_after_add - 1, (
         f"Счётчик избранного не уменьшился: {count_after_add} → {count_after_remove}"
     )
@@ -497,12 +529,15 @@ def test_quantity_change_with_buttons(page: Page):
     qty_input = page.locator(INPUT_QTY).first
     expect(qty_input).to_have_value("1", timeout=5_000)
 
+    # Кликаем с повтором: первый клик по свежеотрисованной кнопке Vue регулярно
+    # теряется, и тест краснел «3 ≠ 2» на исправном сайте (2026-09-02).
     plus = page.locator(BTN_QTY_PLUS).first
-    plus.click()
-    plus.click()
+    click_until(page, plus, lambda: qty_input.input_value() == "2")
+    click_until(page, plus, lambda: qty_input.input_value() == "3")
     expect(qty_input).to_have_value("3")
 
-    page.locator(BTN_QTY_MINUS).first.click()
+    minus = page.locator(BTN_QTY_MINUS).first
+    click_until(page, minus, lambda: qty_input.input_value() == "2")
     expect(qty_input).to_have_value("2")
 
 
@@ -527,15 +562,18 @@ def test_add_to_cart_with_quantity(page: Page):
     price = _bani(price_text)
     assert price > 0
 
+    qty_input = page.locator(INPUT_QTY).first
     plus = page.locator(BTN_QTY_PLUS).first
-    plus.click()
-    plus.click()
-    expect(page.locator(INPUT_QTY).first).to_have_value("3")
+    click_until(page, plus, lambda: qty_input.input_value() == "2")
+    click_until(page, plus, lambda: qty_input.input_value() == "3")
+    expect(qty_input).to_have_value("3")
 
     page.locator(BTN_ADD_CART).first.click()
-    page.wait_for_timeout(3000)
-
-    sum_in_header = _header_cart_sum(page)
+    sum_in_header = wait_until(
+        page,
+        lambda: _header_cart_sum(page),
+        lambda value: value == price * 3,
+    )
     assert sum_in_header == price * 3, (
         f"Сумма в шапке ({sum_in_header}) ≠ price * 3 ({price * 3})"
     )
@@ -549,10 +587,14 @@ def test_add_to_cart_with_quantity(page: Page):
             visible?.click();
         }"""
     )
-    page.wait_for_timeout(2500)
-
-    body_text = page.locator("body").text_content()
-    jbl_occurrences = body_text.count("JBL PartyBox On-the-Go 2")
+    # Ждём, пока товар появится в открывшейся корзине, а не 2.5 с наугад.
+    jbl_occurrences = wait_until(
+        page,
+        lambda: (page.locator("body").text_content() or "").count(
+            "JBL PartyBox On-the-Go 2"
+        ),
+        lambda value: value >= 1,
+    )
     assert jbl_occurrences >= 1, (
         f"Товар не найден в корзине, найдено: {jbl_occurrences}"
     )
@@ -576,8 +618,11 @@ def test_product_price_matches_cart_header_sum(page: Page):
 
     sum_before = _header_cart_sum(page)
     page.locator(BTN_ADD_CART).first.click()
-    page.wait_for_timeout(1500)
-    sum_after = _header_cart_sum(page)
+    sum_after = wait_until(
+        page,
+        lambda: _header_cart_sum(page),
+        lambda value: value != sum_before,
+    )
 
     assert sum_after == sum_before + price, (
         f"Сумма в шапке не отражает цену товара: было {sum_before}, "

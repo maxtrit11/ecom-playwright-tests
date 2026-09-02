@@ -22,12 +22,11 @@
 """
 
 import re
-from typing import Callable
 
 import pytest
-from playwright.sync_api import Locator, Page, expect
+from playwright.sync_api import Page, expect
 
-from conftest import CART_VIEW_POPUP
+from conftest import CART_VIEW_POPUP, click_until
 
 
 @pytest.fixture(autouse=True)
@@ -100,58 +99,10 @@ def _hide_b24_widget(page: Page):
     )
 
 
-def _click_until(
-    page: Page,
-    button: Locator,
-    done: Callable[[], bool],
-    attempts: int = 3,
-    timeout_ms: int = 5_000,
-    **click_kwargs,
-) -> None:
-    """Кликнуть и дождаться фактического изменения корзины, повторив клик.
-
-    Виджет корзины перерисовывается при открытии дровера и после каждой
-    операции, и первый клик по свежеотрисованной кнопке регулярно теряется:
-    обработчик ещё не навешен, DOM не меняется вообще. В CI 2026-08-04 это
-    дало «Количество не увеличилось на 1: 1 → 1» и «Карточек не стало меньше
-    на 1: 2 → 2», тогда как вручную кнопки работают.
-
-    Фиксированной паузой это не лечится: замер в браузере показал, что
-    значение обновляется за ~75 мс, то есть прежних 600 мс хватало с запасом
-    — терялся сам клик. Поэтому ждём результат по факту (`done()`) и только
-    затем повторяем: медленный, но успешный клик мы не продублируем (иначе
-    получили бы количество 3 вместо 2), а потерянный — повторим.
-
-    Перед каждым кликом ждём, пока с кнопки снимут `disabled`: количество в
-    поле обновляется раньше, чем Vue пересчитывает состояние контролов, а
-    `disabled`-кнопка не принимает клик — его перехватывает `.items__counter`,
-    и `click()` висит до таймаута в 45 с. Прежняя фиксированная пауза в 600 мс
-    это прикрывала случайно.
-
-    Исключение не бросаем: падать должен ассерт теста со своим сообщением.
-    """
-    for attempt in range(attempts):
-        try:
-            expect(button).not_to_have_class(
-                re.compile(r"\bdisabled\b"), timeout=5_000
-            )
-        except AssertionError:
-            pass  # не дождались — пробуем кликнуть, ассерт теста рассудит
-
-        try:
-            button.click(timeout=10_000, **click_kwargs)
-        except Exception:
-            if attempt == attempts - 1:
-                raise
-            page.wait_for_timeout(300)
-            continue
-
-        waited = 0
-        while waited < timeout_ms:
-            if done():
-                return
-            page.wait_for_timeout(100)
-            waited += 100
+# Помощник переехал в conftest.py — та же гонка есть и на странице товара,
+# держать две копии незачем. Имя в файле оставлено прежним: все вызовы ниже
+# и их комментарии продолжают читаться как раньше.
+_click_until = click_until
 
 
 def _open_cart_drawer(page: Page):

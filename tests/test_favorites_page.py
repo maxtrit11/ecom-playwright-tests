@@ -16,6 +16,8 @@ import re
 import pytest
 from playwright.sync_api import Page, expect
 
+from conftest import wait_until
+
 
 PRODUCT_URL = "/ru/product/klipsch-detroit"
 SECOND_PRODUCT_URL = "/ru/product/jbl-partybox-on-the-go-2"
@@ -125,9 +127,11 @@ def test_add_to_favorites_from_product_page(page: Page):
     count_before = _header_fav_count(page)
 
     btn = _add_to_favorites(page)
-    page.wait_for_timeout(800)
-
-    count_after = _header_fav_count(page)
+    count_after = wait_until(
+        page,
+        lambda: _header_fav_count(page),
+        lambda value: value != count_before,
+    )
     assert count_after == count_before + 1, (
         f"Счётчик избранного в шапке не вырос: {count_before} → {count_after}"
     )
@@ -141,8 +145,17 @@ def test_remove_from_favorites_via_card_heart(page: Page):
     """Добавить товар → перейти на /favorites → клик по сердечку на карточке
     → карточка пропадает, счётчик в шапке уменьшается."""
     _add_to_favorites(page)
-    page.wait_for_timeout(800)
-    assert _header_fav_count(page) >= 1, "Товар не добавился в избранное"
+    # Ждём, что добавление реально доехало до шапки, прежде чем уходить со
+    # страницы: фиксированной паузы под нагрузкой не хватает, и на /favorites
+    # приезжаешь раньше, чем товар туда попал.
+    assert (
+        wait_until(
+            page,
+            lambda: _header_fav_count(page),
+            lambda value: value >= 1,
+        )
+        >= 1
+    ), "Товар не добавился в избранное"
 
     page.goto(FAVORITES_URL, wait_until="domcontentloaded")
     expect(page.locator(PRODUCT_CARD).first).to_be_visible(timeout=10_000)
@@ -154,9 +167,9 @@ def test_remove_from_favorites_via_card_heart(page: Page):
 
     # Клик по активному сердечку
     page.locator(CARD_HEART_ACTIVE).first.click()
-    page.wait_for_timeout(800)
 
-    # Карточка пропала
+    # Пауза перед этим ожиданием была лишней: `expect` и так опрашивает DOM
+    # до 10 с и завершится, как только карточка исчезнет.
     expect(page.locator(PRODUCT_CARD)).to_have_count(0, timeout=10_000)
     # Счётчик уменьшился
     count_after = _header_fav_count(page)
@@ -226,7 +239,7 @@ def test_remove_all_favorites(page: Page):
     """Добавить товар → /favorites → клик «Удалить все товары из избранного»
     → все карточки удалены, счётчик = 0, отображается заглушка."""
     _add_to_favorites(page)
-    page.wait_for_timeout(800)
+    wait_until(page, lambda: _header_fav_count(page), lambda value: value >= 1)
 
     page.goto(FAVORITES_URL, wait_until="domcontentloaded")
     expect(page.locator(PRODUCT_CARD).first).to_be_visible(timeout=10_000)
@@ -234,7 +247,6 @@ def test_remove_all_favorites(page: Page):
     remove_all = page.locator(BTN_REMOVE_ALL).first
     expect(remove_all).to_be_visible()
     remove_all.click()
-    page.wait_for_timeout(800)
 
     expect(page.locator(PRODUCT_CARD)).to_have_count(0, timeout=10_000)
     assert _header_fav_count(page) == 0, "Счётчик в шапке не обнулился"
