@@ -90,7 +90,41 @@ def check() -> int:
     return 0
 
 
-def matrix() -> int:
+def _merge(shards: list[dict], count: int) -> list[dict]:
+    """Свести раскладку к `count` группам, раскладывая по времени (LPT).
+
+    Зачем вообще сводить. Разбиение ускоряет ОЖИДАНИЕ, но стоит минут: четыре
+    раннера одновременно нагружают стенд, он отвечает медленнее, и суммарное
+    время тестов вырастает (замер 2026-09-02: 55 мин → 94 мин, то есть каждый
+    тест примерно на 65% медленнее). Ночному прогону скорость не нужна — он
+    идёт в 02:00 и его никто не ждёт, — а лишние минуты и лишний флак от
+    нагрузки нужны ещё меньше. Поэтому ночью count=1, а по кнопке count=4,
+    когда человек действительно сидит и ждёт результат.
+    """
+    if count >= len(shards):
+        return shards
+
+    groups: list[dict] = [
+        {"shard": i + 1, "titles": [], "paths": [], "minutes": 0.0}
+        for i in range(count)
+    ]
+    for s in sorted(shards, key=lambda x: -x.get("_minutes", 0)):
+        target = min(groups, key=lambda g: g["minutes"])
+        target["titles"].append(s["title"])
+        target["paths"] += s["paths"]
+        target["minutes"] += s.get("_minutes", 0)
+
+    return [
+        {
+            "shard": g["shard"],
+            "title": "вся суита" if count == 1 else ", ".join(g["titles"]),
+            "paths": g["paths"],
+        }
+        for g in groups
+    ]
+
+
+def matrix(count: int) -> int:
     config = _load()
     # В workflow матрица подставляется через fromJSON, поэтому нужен ОДНОСТРОЧНЫЙ
     # компактный JSON: многострочное значение в $GITHUB_OUTPUT не поедет.
@@ -103,7 +137,7 @@ def matrix() -> int:
                     "title": s["title"],
                     "paths": " ".join(s["paths"]),
                 }
-                for s in config["shards"]
+                for s in _merge(config["shards"], count)
             ],
             ensure_ascii=False,
             separators=(",", ":"),
@@ -112,11 +146,28 @@ def matrix() -> int:
     return 0
 
 
+def _count_from_argv() -> int:
+    """--count N; мусор и пустую строку трактуем как 1, а не падаем.
+
+    Значение приезжает из инпута workflow, где его набирает человек. Уронить
+    из-за опечатки весь ночной прогон — плохой размен; безопасный дефолт
+    (последовательно) хуже не сделает.
+    """
+    if "--count" not in sys.argv:
+        return 4
+    try:
+        value = int(sys.argv[sys.argv.index("--count") + 1])
+    except (IndexError, ValueError):
+        print("::warning::некорректный --count, гоню одним шардом", file=sys.stderr)
+        return 1
+    return max(1, value)
+
+
 if __name__ == "__main__":
     command = sys.argv[1] if len(sys.argv) > 1 else "check"
     if command == "check":
         raise SystemExit(check())
     if command == "matrix":
-        raise SystemExit(matrix())
+        raise SystemExit(matrix(_count_from_argv()))
     print(f"неизвестная команда: {command}; ожидается check или matrix", file=sys.stderr)
     raise SystemExit(2)
