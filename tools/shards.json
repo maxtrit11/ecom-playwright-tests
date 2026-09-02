@@ -1,0 +1,68 @@
+{
+  "_comment": [
+    "Раскладка суиты по шардам CI. ЕДИНСТВЕННЫЙ источник правды: e2e.yml берёт",
+    "матрицу отсюда, tools/shards.py по этому же файлу проверяет, что ни один",
+    "файл тестов не потерялся.",
+    "",
+    "Времена в комментариях — замер из ночного прогона 33599678827. Раскладка",
+    "сбалансирована по ним (LPT), критический путь ~15 мин. Добавил много тестов",
+    "в один файл — перебалансируй, иначе его шард станет горлышком.",
+    "",
+    "Кабинет держим ОДНИМ шардом целиком: там общая учётка stage, и",
+    "test_change_password_success меняет ей пароль посреди прогона. Разложи",
+    "кабинет по разным раннерам — соседи получат «Неверный логин или пароль» на",
+    "полностью исправном продукте.",
+    "",
+    "tests/test_cart_page.py сюда НЕ входит: он про Вид 2 корзины и гоняется",
+    "отдельным job'ом после всех шардов, когда стенд переключён."
+  ],
+  "cart_view_2_only": ["tests/test_cart_page.py"],
+  "shards": [
+    {
+      "shard": 1,
+      "title": "Кабинет",
+      "_minutes": 14.8,
+      "paths": ["tests/account"]
+    },
+    {
+      "shard": 2,
+      "title": "Поиск, сравнение, избранное",
+      "_minutes": 13.8,
+      "paths": [
+        "tests/test_search.py",
+        "tests/test_compare_page.py",
+        "tests/test_favorites_page.py",
+        "tests/test_product_listing.py",
+        "tests/test_filters_pagination.py",
+        "tests/test_special_offers.py",
+        "tests/test_one_click_buy_popup.py"
+      ]
+    },
+    {
+      "shard": 3,
+      "title": "Пагинация, фильтры, сортировка, каталог",
+      "_minutes": 13.2,
+      "paths": [
+        "tests/test_pagination.py",
+        "tests/test_category_filters.py",
+        "tests/test_sorting.py",
+        "tests/test_catalog_menu.py",
+        "tests/test_language_switch.py",
+        "tests/test_price_consistency.py"
+      ]
+    },
+    {
+      "shard": 4,
+      "title": "Чекаут, корзина, товар",
+      "_minutes": 13.3,
+      "paths": [
+        "tests/test_checkout_block.py",
+        "tests/test_cart_block.py",
+        "tests/test_product_page.py",
+        "tests/test_homepage.py",
+        "tests/test_preorder_product.py",
+        "tests/test_credit_popup.py"
+      ]
+    }
+  ]
+}
