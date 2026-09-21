@@ -853,24 +853,54 @@ def open_account_page(page, path: str = "/ru/account") -> None:
         page.wait_for_timeout(2_000)
 
 
+_LOGGED_IN_JS = (
+    "() => { const b = document.querySelector('%s');"
+    " return !!b && /Кабинет|Cabinet/i.test(b.innerText); }" % BTN_HEADER_AUTH
+)
+
+
+def _is_logged_in(page) -> bool:
+    """Шапка показывает «Кабинет» — значит, сессия есть."""
+    try:
+        return bool(page.evaluate(_LOGGED_IN_JS))
+    except Exception:
+        return False
+
+
+def _logout_via_header_menu(page) -> bool:
+    """Выйти через меню «Кабинет» на текущей странице. True — вышли."""
+    try:
+        page.locator(BTN_HEADER_AUTH).click()
+        page.get_by_role("button", name="Выйти", exact=True).click(timeout=10_000)
+        page.wait_for_function(f"() => !({_LOGGED_IN_JS})()", timeout=15_000)
+        return True
+    except Exception:
+        return False
+
+
 def logout(page) -> None:
     """Выйти из аккаунта через меню «Кабинет».
 
     Если пункт «Выйти» почему-то недоступен, сносим сессию принудительно:
     задача хелпера — гарантированно оставить браузер гостем, а не проверять
     сам логаут (это отдельный кейс).
+
+    Главную открываем, только если без этого никак: у авторизованного она
+    грузится 6-7 с против 2 с у гостя (замер 21.09.2026), а шапка с меню
+    «Кабинет» есть на любой странице сайта. Поэтому сперва пробуем выйти прямо
+    с текущей страницы — тесты зовут logout из кабинета, где приложение давно
+    гидрировано и клик по шапке не теряется.
     """
+    if _is_logged_in(page) and _logout_via_header_menu(page):
+        return
+
     try:
         goto_resilient(page, "/ru")
-        page.locator(BTN_HEADER_AUTH).click()
-        page.get_by_role("button", name="Выйти", exact=True).click(timeout=10_000)
-        page.wait_for_function(
-            "() => { const b = document.querySelector('%s');"
-            " return !!b && !/Кабинет|Cabinet/i.test(b.innerText); }"
-            % BTN_HEADER_AUTH,
-            timeout=15_000,
-        )
-        return
+        wait_hydrated(page)
+        if not _is_logged_in(page):
+            return  # уже гость — ждать пункт «Выйти» незачем
+        if _logout_via_header_menu(page):
+            return
     except Exception:
         pass
 
