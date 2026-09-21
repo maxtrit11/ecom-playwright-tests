@@ -604,30 +604,42 @@ def _checkout_summary(page: Page) -> dict:
     """Сводка формы оформления в бани: goods / delivery / discount / total.
 
     `delivery` = None, если строки «Доставка» в сводке нет (самовывоз).
-    Прогресс-строку «Бесплатная доставка» пропускаем: там не сумма заказа,
-    а порог бесплатной доставки («5 199 / 600 MDL»).
+    Если товары набрали порог бесплатной доставки, вместо суммы в строке
+    стоит «—» (не «0 MDL») — это `delivery` = 0 и `delivery_free` = True.
+    Прогресс-строка «Бесплатная доставка» — не сумма заказа, а порог
+    («29 596 / 1 200 MDL»): из неё берём только `free_threshold`.
     """
     rows = page.evaluate(
         """() => {
             const box = document.querySelector('.cart__sidebar--checkout');
             if (!box) return null;
             return [...box.querySelectorAll('.list__item')]
-                .filter(r => !r.className.includes('proggress'))
                 .map(r => ({
+                    progress: r.className.includes('proggress'),
                     name: (r.querySelector('.list__name')?.innerText || '').trim(),
-                    sum: (r.querySelector('.list__sum')?.innerText || '').trim(),
+                    // в прогресс-строке ДВА .list__sum («29 596 /» и «1 200 MDL»),
+                    // берём их общий контейнер, иначе порог теряется
+                    sum: (r.querySelector('.list__item__info__prices, .list__sum')
+                          ?.innerText || '').trim(),
                 }));
         }"""
     )
     assert rows is not None, "Блок сводки .cart__sidebar--checkout не найден"
 
-    out = {"goods": None, "delivery": None, "discount": 0}
+    out = {"goods": None, "delivery": None, "discount": 0,
+           "delivery_free": False, "free_threshold": None}
     for row in rows:
         name = row["name"]
-        if re.match(r"^\s*Стоимость товаров", name):
+        if row["progress"]:
+            # «29 596 / 1 200 MDL» — порог стоит после косой черты
+            out["free_threshold"] = _money_to_bani(row["sum"].split("/")[-1])
+        elif re.match(r"^\s*Стоимость товаров", name):
             out["goods"] = _money_to_bani(row["sum"])
         elif re.match(r"^\s*Доставка", name):
-            out["delivery"] = _money_to_bani(row["sum"])
+            if row["sum"] in ("—", "–", "-"):
+                out["delivery"], out["delivery_free"] = 0, True
+            else:
+                out["delivery"] = _money_to_bani(row["sum"])
         elif re.match(r"^\s*Скидка", name):
             out["discount"] = _money_to_bani(row["sum"]) or 0
 
@@ -751,6 +763,17 @@ def test_delivery_cost_updates_in_summary(checkout: Page):
         assert s["delivery"] >= 0, (
             f"Отрицательная стоимость доставки ({human}): {s['delivery']} бани"
         )
+        # «—» вместо суммы = бесплатная доставка; честна она, только если
+        # товары действительно набрали порог (для региона он выше, чем для
+        # Кишинёва: 1 200 против 600 MDL на 21.09.2026)
+        if s["delivery_free"]:
+            assert s["free_threshold"] is not None, (
+                f"Доставка «—» ({human}), но строки с порогом бесплатной доставки нет"
+            )
+            assert s["goods"] >= s["free_threshold"], (
+                f"Доставка бесплатная ({human}), хотя товары {s['goods']} "
+                f"не набрали порог {s['free_threshold']} (в бани)"
+            )
         expected = s["goods"] - s["discount"] + s["delivery"]
         assert s["total"] == expected, (
             f"Итог не сходится ({human}): товары {s['goods']} − скидка "
