@@ -163,13 +163,32 @@ def _open_cart_drawer(page: Page):
     _hide_b24_widget(page)
 
 
-def _add_one_product_to_cart(page: Page, product_url: str):
-    """Открыть PDP, нажать «В корзину»."""
-    page.goto(product_url, wait_until="domcontentloaded", timeout=60_000)
+def _click_add_to_cart(page: Page):
+    """Нажать «В корзину» на уже открытой PDP и дождаться, что товар добавлен.
+
+    Признак добавления — надпись на иконке корзины в шапке: «Корзина» у пустой
+    корзины и сумма у непустой («7 399 MDL»). Меняется за ~100 мс после клика
+    (замер в браузере 2026-09-22). Раньше здесь стояла пауза 800 мс, которая
+    потерянный клик не ловила вовсе, а на успешном просто тратила время.
+    """
     add_btn = page.locator(BTN_ADD_TO_CART).first
     expect(add_btn).to_be_visible(timeout=15_000)
-    add_btn.click()
-    page.wait_for_timeout(800)
+    header_cart = page.locator(HEADER_CART_BTN)
+    label_before = header_cart.inner_text()
+    _click_until(page, add_btn, lambda: header_cart.inner_text() != label_before)
+
+
+def _add_one_product_to_cart(page: Page, product_url: str):
+    """Открыть PDP и добавить товар в корзину, где УЖЕ что-то лежит.
+
+    На свежей странице шапка ~3 с показывает «Корзина» даже при непустой
+    корзине и лишь потом подставляет сумму (замер 2026-09-22). Прочитай мы
+    надпись раньше — её смену `_click_add_to_cart` принял бы за добавление, и
+    клик не был бы проверен. Поэтому сначала ждём сумму в шапке.
+    """
+    page.goto(product_url, wait_until="domcontentloaded", timeout=60_000)
+    expect(page.locator(HEADER_CART_BTN)).to_contain_text("MDL", timeout=15_000)
+    _click_add_to_cart(page)
 
 
 @pytest.fixture
@@ -192,14 +211,16 @@ def cart_with_product(page: Page, in_stock_product: str):
             page.locator(BTN_CLEAR_ALL).first,
             lambda: page.locator(CART_PRODUCT).count() == 0,
         )
-        # Закрываем после очистки, чтобы вернуться на PDP
-        _click_until(
-            page,
-            page.locator(BTN_CLOSE),
-            lambda: page.locator(CART_MODAL_SHOWN).count() == 0,
-        )
+    # Закрываем дровер и добавляем товар прямо на этой PDP. Раньше здесь был
+    # повторный goto на ту же страницу — третья загрузка PDP за фикстуру,
+    # несколько секунд на каждый тест файла.
+    _click_until(
+        page,
+        page.locator(BTN_CLOSE),
+        lambda: page.locator(CART_MODAL_SHOWN).count() == 0,
+    )
 
-    _add_one_product_to_cart(page, in_stock_product)
+    _click_add_to_cart(page)
     _open_cart_drawer(page)
     expect(page.locator(CART_PRODUCT).first).to_be_visible(timeout=10_000)
     return page
