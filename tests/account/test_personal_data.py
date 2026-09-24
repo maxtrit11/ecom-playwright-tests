@@ -62,10 +62,13 @@ def login_and_open_personal_data(page: Page, hydrated):
     ).fill(USERS["validUser"]["password"])
     page.get_by_text("Войдите в аккаунт").first.click()
 
-    # Ждём успешный логин — модалка закрывается
+    # Ждём успешный логин — модалка закрывается.
+    # 30 с, а не 10: модалка исчезает только после полного редиректа на главную,
+    # а у авторизованного она грузится 6–7 с, в CI под нагрузкой дольше
+    # (run 35967022229 — логин прошёл, упёрлись в «navigation to finish»).
     expect(
         page.locator(".modal__authentification__ecom-content").first
-    ).not_to_be_visible(timeout=10_000)
+    ).not_to_be_visible(timeout=30_000)
     expect(page.locator(".btn__action.btn__auth")).to_contain_text(
         "Кабинет", timeout=10_000
     )
