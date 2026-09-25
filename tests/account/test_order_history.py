@@ -477,10 +477,17 @@ def test_combined_filters(page: Page):
     number = sample["number"].lstrip("#")
 
     # 1. Поиск по номеру этого заказа
+    # Ждём ответ самого поиска, а не фиксированную паузу: запрос уходит по
+    # debounce ~1 с после ввода, ответ на stage приходит на ~1.8 с, а в CI —
+    # позже 2 с. Тогда таблица перерисовывалась уже при открытом дропдауне
+    # статуса, тот закрывался, и клик по опции висел 45 с (прогон 36104780965).
     search = page.locator(SEARCH_INPUT)
-    search.fill(number)
-    search.press("Enter")
-    page.wait_for_timeout(2000)
+    with page.expect_response(
+        lambda r: "/order/" in r.url and f"search={number}" in r.url,
+        timeout=20_000,
+    ):
+        search.fill(number)
+        search.press("Enter")
 
     # 2. Его же статус. Прежняя версия кликала `.v-select`, а это фильтр
     #    КОМПАНИИ, а не статуса — то есть кейс проверял не то, что заявлено.

@@ -61,6 +61,11 @@ NOTIFICATION_LINK = f"{NOTIFICATION} a.btn__ntf"
 # Заглушка при пустом списке
 EMPTY_STUB = ".favorites__empty"
 
+# Карточки на /favorites строятся на клиенте после гидрации (id берутся из
+# localStorage, товары догружаются отдельно): локально ~5 с от начала перехода,
+# в CI 10 с не хватало (прогон 36104780965).
+FAV_CARDS_TIMEOUT = 20_000
+
 
 # ---------------------------------------------------------------------------
 # Хелперы
@@ -145,7 +150,7 @@ def test_remove_from_favorites_via_card_heart(page: Page):
     assert _header_fav_count(page) >= 1, "Товар не добавился в избранное"
 
     page.goto(FAVORITES_URL, wait_until="domcontentloaded")
-    expect(page.locator(PRODUCT_CARD).first).to_be_visible(timeout=10_000)
+    expect(page.locator(PRODUCT_CARD).first).to_be_visible(timeout=FAV_CARDS_TIMEOUT)
     count_before = _header_fav_count(page)
 
     # Hover карточки (по кейсу — кнопки появляются при наведении)
@@ -229,7 +234,7 @@ def test_remove_all_favorites(page: Page):
     page.wait_for_timeout(800)
 
     page.goto(FAVORITES_URL, wait_until="domcontentloaded")
-    expect(page.locator(PRODUCT_CARD).first).to_be_visible(timeout=10_000)
+    expect(page.locator(PRODUCT_CARD).first).to_be_visible(timeout=FAV_CARDS_TIMEOUT)
 
     remove_all = page.locator(BTN_REMOVE_ALL).first
     expect(remove_all).to_be_visible()
@@ -312,7 +317,7 @@ def test_multiple_favorites_render_correctly(page: Page):
 
     page.goto(FAVORITES_URL, wait_until="domcontentloaded")
     cards = page.locator(PRODUCT_CARD)
-    expect(cards.first).to_be_visible(timeout=10_000)
+    expect(cards.first).to_be_visible(timeout=FAV_CARDS_TIMEOUT)
     assert cards.count() >= 2, f"Ожидалось ≥2 карточек, фактически {cards.count()}"
 
     # Все карточки должны иметь положительные bbox и не перекрываться
@@ -353,7 +358,7 @@ def test_open_product_page_from_favorites_card(page: Page):
 
     page.goto(FAVORITES_URL, wait_until="domcontentloaded")
     card = page.locator(PRODUCT_CARD).first
-    expect(card).to_be_visible(timeout=10_000)
+    expect(card).to_be_visible(timeout=FAV_CARDS_TIMEOUT)
 
     # Кликаем по ссылке внутри карточки (картинка/название ведут на /product/*)
     link = card.locator("a[href*='/product/']").first
