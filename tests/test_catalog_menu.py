@@ -15,6 +15,9 @@ SUBCATEGORIES = ".menu__subcategories"
 SUBCATEGORIES_ITEM = ".subcategories__item"
 SUBCATEGORY_LINK = ".subcategory__link"
 FOOTER_SUBCATEGORY = ".footer__subcategory"
+# Последнее звено крошек — текущая страница. Широкий `[class*='breadcrumb']`
+# ловит и nav, и ol, и каждый li — strict mode валится через раз.
+BREADCRUMB_CURRENT = ".breadcrumb__item[aria-current='page']"
 
 
 @pytest.fixture(autouse=True)
@@ -197,8 +200,7 @@ def test_navigate_to_subcategory_page(page: Page):
     expect(page).not_to_have_url(re.compile(r"^https?://[^/]+/ru/?$"), timeout=10_000)
 
     # Хлебные крошки отображаются
-    breadcrumbs = page.locator(".breadcrumbs, .breadcrumb, [class*='breadcrumb']")
-    expect(breadcrumbs).to_be_visible(timeout=5_000)
+    expect(page.locator(BREADCRUMB_CURRENT)).to_be_visible(timeout=10_000)
 
 
 # ===========================================================================
@@ -222,8 +224,7 @@ def test_navigate_to_product_list_page(page: Page):
     expect(page).not_to_have_url(re.compile(r"^https?://[^/]+/ru/?$"), timeout=10_000)
 
     # Хлебные крошки
-    breadcrumbs = page.locator(".breadcrumbs, .breadcrumb, [class*='breadcrumb']")
-    expect(breadcrumbs).to_be_visible(timeout=5_000)
+    expect(page.locator(BREADCRUMB_CURRENT)).to_be_visible(timeout=10_000)
 
     # Проверяем наличие товаров или подкатегорий на странице
     has_products = page.locator("[class*='product'], [class*='card']").count() > 0
@@ -260,10 +261,7 @@ def test_navigate_via_all_category_button(page: Page):
         expect(page).not_to_have_url(
             re.compile(r"^https?://[^/]+/ru/?$"), timeout=10_000
         )
-        breadcrumbs = page.locator(
-            ".breadcrumbs, .breadcrumb, [class*='breadcrumb']"
-        )
-        expect(breadcrumbs).to_be_visible(timeout=5_000)
+        expect(page.locator(BREADCRUMB_CURRENT)).to_be_visible(timeout=10_000)
     else:
         pytest.skip("Кнопка «Все <категория>» не найдена")
 
