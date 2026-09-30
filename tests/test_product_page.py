@@ -13,6 +13,7 @@ import re
 
 import pytest
 from playwright.sync_api import Page, expect
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 
 # Товар используется как эталонный для всех тестов
@@ -261,6 +262,17 @@ def test_open_image_full_size(page: Page):
     # Фото открылось именно В ПОЛНОМ РАЗМЕРЕ — оно шире, чем было на странице
     full_image = lightbox.locator("img.fancybox-image").first
     expect(full_image).to_be_visible(timeout=10_000)
+    # Fancybox открывается zoom-анимацией от миниатюры: первые кадры фото ровно
+    # того же размера, что и на странице. Под нагрузкой в CI замер попадал именно
+    # туда — 543.99px против 544px (прогон 36685307738). Ждём, пока фото вырастет.
+    try:
+        page.wait_for_function(
+            "([el, w]) => el.getBoundingClientRect().width > w",
+            arg=[full_image.element_handle(), inline_width],
+            timeout=10_000,
+        )
+    except PlaywrightTimeoutError:
+        pass  # ассерт ниже покажет итоговые размеры
     full_width = full_image.bounding_box()["width"]
     assert full_width > inline_width, (
         f"Фото в лайтбоксе не крупнее, чем на странице: "

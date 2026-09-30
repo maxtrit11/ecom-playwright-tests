@@ -254,15 +254,18 @@ def test_add_to_favorites_from_catalog_card(page: Page):
     → счётчик +1, на карточке появляется класс is-active."""
     page.goto(HOME_URL, wait_until="domcontentloaded")
     # Каталог отрисовывается Swiper-ом лениво при попадании в viewport.
-    # Скроллим постепенно, чтобы триггернуть IntersectionObserver.
+    # Скроллим постепенно, чтобы триггернуть IntersectionObserver. Карусели
+    # монтируются по очереди, а первая бывает целиком «Нет в наличии» (без
+    # сердечка), поэтому листаем до карточки с сердечком, а не до любой.
     page.evaluate(
-        """async () => {
-            for (let y = 0; y < 4000; y += 600) {
+        """async (sel) => {
+            for (let y = 0; y < 9000; y += 600) {
                 window.scrollTo(0, y);
                 await new Promise(r => setTimeout(r, 400));
-                if (document.querySelectorAll('.product__item').length > 0) return;
+                if (document.querySelector(sel)) return;
             }
-        }"""
+        }""",
+        CATALOG_CARD_WITH_HEART,
     )
     page.wait_for_selector(CATALOG_CARD_WITH_HEART, state="attached", timeout=15_000)
     page.wait_for_timeout(500)
