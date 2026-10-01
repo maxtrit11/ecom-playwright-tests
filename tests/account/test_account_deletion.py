@@ -27,7 +27,10 @@ EMAIL = USERS["loginUser"]["email"]
 PASSWORD = USERS["loginUser"]["password"]
 
 MODAL = ".modal__authentification__ecom-content"
-BTN_DELETE_ACCOUNT = ".request--delete-profile"
+# Класс `request--delete-profile` носит и соседняя «Выйти со всех устройств»
+# (у неё ещё `request--logout-all`) — без исключения селектор держался только
+# на порядке кнопок в DOM.
+BTN_DELETE_ACCOUNT = ".request--delete-profile:not(.request--logout-all)"
 BTN_CONFIRM = "Да, хочу удалить"  # НИКОГДА не кликать в тестах
 BTN_CANCEL = "Отменить"
 

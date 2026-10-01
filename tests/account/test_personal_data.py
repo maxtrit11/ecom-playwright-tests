@@ -38,6 +38,24 @@ def click_save_and_wait(page: Page) -> None:
     expect(page.locator(NAME_INPUT)).to_be_enabled(timeout=15_000)
 
 
+def _restore_fields(page: Page, name: str, surname: str) -> None:
+    """Вернуть имя и фамилию, если они отличаются от исходных.
+
+    Зовётся из `finally`: страница могла остаться в любом состоянии, поэтому
+    сначала перечитываем её, а сохраняем, только если есть что возвращать.
+    """
+    page.reload(wait_until="domcontentloaded")
+    expect(page.locator(NAME_INPUT)).to_be_enabled(timeout=15_000)
+    if (
+        page.locator(NAME_INPUT).input_value() == name
+        and page.locator(SURNAME_INPUT).input_value() == surname
+    ):
+        return
+    page.locator(NAME_INPUT).fill(name)
+    page.locator(SURNAME_INPUT).fill(surname)
+    click_save_and_wait(page)
+
+
 # ---------------------------------------------------------------------------
 # Фикстура: логин и переход на страницу «Личные данные»
 # ---------------------------------------------------------------------------
@@ -116,31 +134,31 @@ def test_change_personal_data(page: Page):
     new_name = f"TestName{suffix}"
     new_surname = f"TestSurname{suffix}"
 
-    # Вносим изменения
-    page.locator(NAME_INPUT).fill(new_name)
-    page.locator(SURNAME_INPUT).fill(new_surname)
+    try:
+        # Вносим изменения
+        page.locator(NAME_INPUT).fill(new_name)
+        page.locator(SURNAME_INPUT).fill(new_surname)
 
-    # Проверяем что в полях отображаются введённые данные
-    expect(page.locator(NAME_INPUT)).to_have_value(new_name)
-    expect(page.locator(SURNAME_INPUT)).to_have_value(new_surname)
+        # Проверяем что в полях отображаются введённые данные
+        expect(page.locator(NAME_INPUT)).to_have_value(new_name)
+        expect(page.locator(SURNAME_INPUT)).to_have_value(new_surname)
 
-    # Кликаем «Изменить» и ждём ответа сервера
-    click_save_and_wait(page)
+        # Кликаем «Изменить» и ждём ответа сервера
+        click_save_and_wait(page)
 
-    # Проверяем что новые значения отображаются после сохранения
-    expect(page.locator(NAME_INPUT)).to_have_value(new_name, timeout=10_000)
-    expect(page.locator(SURNAME_INPUT)).to_have_value(new_surname, timeout=10_000)
+        # Проверяем что новые значения отображаются после сохранения
+        expect(page.locator(NAME_INPUT)).to_have_value(new_name, timeout=10_000)
+        expect(page.locator(SURNAME_INPUT)).to_have_value(new_surname, timeout=10_000)
 
-    # Обновляем страницу и проверяем что изменения сохранились
-    page.reload()
-    expect(page.locator(NAME_INPUT)).to_be_enabled(timeout=15_000)
-    expect(page.locator(NAME_INPUT)).to_have_value(new_name)
-    expect(page.locator(SURNAME_INPUT)).to_have_value(new_surname)
-
-    # Восстанавливаем исходные данные
-    page.locator(NAME_INPUT).fill(original_name)
-    page.locator(SURNAME_INPUT).fill(original_surname)
-    click_save_and_wait(page)
+        # Обновляем страницу и проверяем что изменения сохранились
+        page.reload()
+        expect(page.locator(NAME_INPUT)).to_be_enabled(timeout=15_000)
+        expect(page.locator(NAME_INPUT)).to_have_value(new_name)
+        expect(page.locator(SURNAME_INPUT)).to_have_value(new_surname)
+    finally:
+        # Учётка общая: исходные данные возвращаем даже после падения ассерта,
+        # иначе в кабинете остаётся «TestName1234» для всех следующих тестов.
+        _restore_fields(page, original_name, original_surname)
 
 
 # ===========================================================================
@@ -161,9 +179,13 @@ def test_empty_required_fields_show_error(page: Page):
     btn.scroll_into_view_if_needed()
     btn.click()
 
-    # Под обязательными полями отображаются сообщения об ошибке
-    validations = page.locator(".validation")
-    expect(validations.first).to_be_visible(timeout=10_000)
+    # Под ОБОИМИ обязательными полями — «Это обязательное поле». В форме
+    # кабинета ещё три `.validation` (телефон, e-mail, код), все скрытые, —
+    # прежний `.validation` + `.first` держался только на порядке в DOM.
+    validations = page.locator(".account-form .validation:visible")
+    expect(validations).to_have_count(2, timeout=10_000)
+    expect(validations.first).to_contain_text("обязательное поле")
+    expect(validations.last).to_contain_text("обязательное поле")
 
     # Данные не сохраняются — после перезагрузки поля содержат прежние значения
     page.reload()
@@ -182,19 +204,18 @@ def test_change_single_field_keeps_others(page: Page):
     assert original_surname, "Фамилия пуста — тест не сможет проверить, что она уцелела"
 
     new_name = f"OnlyName{str(int(time.time() * 1000))[-4:]}"
-    page.locator(NAME_INPUT).fill(new_name)
+    try:
+        page.locator(NAME_INPUT).fill(new_name)
 
-    click_save_and_wait(page)
+        click_save_and_wait(page)
 
-    # После перезагрузки: новое имя сохранилось, фамилия не пострадала
-    page.reload()
-    expect(page.locator(NAME_INPUT)).to_be_enabled(timeout=15_000)
-    expect(page.locator(NAME_INPUT)).to_have_value(new_name)
-    expect(page.locator(SURNAME_INPUT)).to_have_value(original_surname)
-
-    # Возвращаем исходное имя
-    page.locator(NAME_INPUT).fill(original_name)
-    click_save_and_wait(page)
+        # После перезагрузки: новое имя сохранилось, фамилия не пострадала
+        page.reload()
+        expect(page.locator(NAME_INPUT)).to_be_enabled(timeout=15_000)
+        expect(page.locator(NAME_INPUT)).to_have_value(new_name)
+        expect(page.locator(SURNAME_INPUT)).to_have_value(original_surname)
+    finally:
+        _restore_fields(page, original_name, original_surname)
 
 
 # ===========================================================================

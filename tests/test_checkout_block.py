@@ -231,9 +231,16 @@ def checkout(page: Page, in_stock_product: str):
 def _click_radio_by_id(page: Page, radio_id: str):
     """Сам `<input type=radio>` визуально скрыт. Клик по `<div class="payment__group">`
     ничего не делает — клик надо посылать в `<label for="ID">`, тогда браузер
-    «прокликает» связанный input."""
-    page.locator(f'{CHECKOUT_FORM} label[for="{radio_id}"]').first.scroll_into_view_if_needed()
-    page.locator(f'{CHECKOUT_FORM} label[for="{radio_id}"]').first.click()
+    «прокликает» связанный input.
+
+    Докручиваем подпись к СЕРЕДИНЕ экрана, а не «до края» (scroll_into_view_if_needed):
+    на телефоне к низу формы прилип блок итога с кнопками (~290px), и подпись,
+    доведённая до нижнего края, оказывалась под ним — клик приходился в ссылку
+    «условия…», радио не переключалось (мобильная суита, 29.09.2026). На
+    десктопе от этого ничего не меняется."""
+    label = page.locator(f'{CHECKOUT_FORM} label[for="{radio_id}"]').first
+    label.evaluate("el => el.scrollIntoView({block: 'center'})")
+    label.click()
 
 
 def _require_option(page: Page, radio_id: str, human: str):

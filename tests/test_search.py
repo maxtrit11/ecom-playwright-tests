@@ -5,6 +5,8 @@ import re
 import pytest
 from playwright.sync_api import Page, expect
 
+from test_sorting import _in_stock_prices
+
 # Селекторы поиска
 # В DOM главной страницы — две копии каждого элемента поиска (десктопный
 # и мобильный для разметки ≤1024px). Чтобы strict-mode Playwright находил
@@ -37,7 +39,8 @@ SORT_OPTION = ".sorting-bar__list span"
 
 
 def _card_prices(page: Page) -> list[int]:
-    """Цены товаров в наличии из сетки результатов, в порядке отображения.
+    """Цены товаров в наличии из сетки результатов, в банях, в порядке
+    отображения.
 
     Раньше цены собирались селектором `[class*='price']` по ВСЕЙ странице:
     первыми в DOM идут элементы фильтра цены (границы диапазона), поэтому
@@ -45,22 +48,13 @@ def _card_prices(page: Page) -> list[int]:
     падал с «первая цена 431999.0 > последняя 296.65» на исправной
     сортировке (e2e run 31599538819).
 
-    Читаем то же, что `_in_stock_prices` в tests/test_sorting.py: цену
-    карточки `.product__prices .no-discount`, пропуская товары «нет в
-    наличии» (они уезжают в конец списка независимо от цены) и карточки
-    без цены.
+    Потом здесь стояла своя копия разбора: `.no-discount` + parseInt по всем
+    цифрам. `.no-discount` есть только у товаров без скидки (остальные
+    выпадали из проверки), а склейка цифр превращала «2 379.15 MDL» в 237915
+    рядом с «1 899 MDL» = 1899 (30.09.2026). Теперь — общий хелпер сортировки:
+    текущая цена карточки, в банях, без товаров «нет в наличии».
     """
-    return page.evaluate(
-        """() => [...document.querySelectorAll('.product__items .product__item')]
-            .filter(c => !c.querySelector('.product__out-of-stock-label'))
-            .map(c => {
-                const n = c.querySelector('.product__prices .no-discount');
-                if (!n) return null;
-                const v = parseInt(n.textContent.replace(/[^\\d]/g, ''));
-                return isNaN(v) ? null : v;
-            })
-            .filter(v => v != null);"""
-    )
+    return _in_stock_prices(page)
 
 
 EXISTING_QUERY = "jbl"
@@ -441,31 +435,36 @@ def test_sort_by_price_ascending(page: Page):
     # (см. tests/test_sorting.py). Широкий `[class*='sort'].first` брал внешнюю
     # обёртку `div.catalog__sort`: клик по ней список не открывает, опция
     # остаётся hidden, и тест падал по таймауту клика (проверено 2026-07-30).
+    #
+    # Пропавшая сортировка, пропавшая опция или меньше двух цен — это поломка
+    # страницы, а не повод для skip: раньше тест в этих случаях молча
+    # пропускался или проходил, не сравнив ни одной пары цен.
     sort_btn = page.locator(SORT_BTN).first
-    if sort_btn.count() == 0 or not sort_btn.is_visible():
-        pytest.skip("Блок сортировки не найден")
+    expect(sort_btn).to_be_visible(timeout=15_000)
+    sort_before = page.evaluate("() => new URLSearchParams(location.search).get('sort')")
 
     sort_btn.click()
-    page.wait_for_timeout(300)
-
-    # Ищем опцию «низкой цены» внутри раскрытого списка
     low_price_option = page.locator(SORT_OPTION).filter(
         has_text=re.compile(r"[Нн]изк|[Ll]ow|[Cc]rescător")
+    ).first
+    expect(low_price_option).to_be_visible(timeout=5_000)
+    low_price_option.click()
+    page.wait_for_function(
+        "(before) => new URLSearchParams(location.search).get('sort') !== before",
+        arg=sort_before,
+        timeout=20_000,
     )
-    if low_price_option.count() > 0:
-        low_price_option.first.click()
-        page.wait_for_load_state("networkidle")
-        page.wait_for_timeout(1000)
+    page.wait_for_load_state("networkidle")
+    page.wait_for_timeout(1000)
 
-        price_values = _card_prices(page)
-
-        if len(price_values) >= 2:
-            assert price_values == sorted(price_values), (
-                f"Цены не по возрастанию при сортировке «от низкой цены»: "
-                f"{price_values}"
-            )
-    else:
-        pytest.skip("Опция сортировки по цене не найдена")
+    price_values = _card_prices(page)
+    assert len(price_values) >= 2, (
+        f"На странице результатов меньше двух цен товаров в наличии: {price_values}"
+    )
+    assert price_values == sorted(price_values), (
+        f"Цены не по возрастанию при сортировке «от низкой цены»: "
+        f"{[p / 100 for p in price_values]}"
+    )
 
 
 # Кейс 332: Переход на страницу товара со страницы поиска
@@ -474,20 +473,20 @@ def test_click_product_card_on_search_page(page: Page):
     переход на страницу товара."""
     go_to_search_results_page(page, EXISTING_QUERY)
 
-    page.wait_for_timeout(1000)
-    product_card = page.locator(
-        f"{SEARCH_PAGE_PRODUCTS} a, a:has({SEARCH_PAGE_PRODUCTS})"
-    )
-    if product_card.count() == 0:
-        # Альтернатива — любая ссылка на товар
-        product_card = page.locator("a[href*='/product/']")
+    # Карточки монтируются после гидрации — ждём ссылку в карточке, а не
+    # паузу + мгновенный count(). Раньше без карточек тест уходил в skip, а
+    # запасной селектор `a[href*='/product/']` по всей странице мог увести
+    # на товар из шапки или баннера — пустая выдача не ловилась.
+    link = page.locator(".product__items .product__item a[href*='/product/']").first
+    expect(link).to_be_visible(timeout=15_000)
+    href = link.get_attribute("href")
 
-    if product_card.count() > 0:
-        assert _click_until_product_page(page, product_card.first), (
-            f"Не перешли на страницу товара: {page.url}"
-        )
-    else:
-        pytest.skip("Карточки товаров не найдены на странице результатов")
+    assert _click_until_product_page(page, link), (
+        f"Не перешли на страницу товара: {page.url}"
+    )
+    # Открылся именно тот товар, по которому кликнули
+    slug = href.rstrip("/").split("/")[-1]
+    expect(page).to_have_url(re.compile(re.escape(slug)))
 
 
 # Кейс 333: Добавление товара в корзину со страницы поиска

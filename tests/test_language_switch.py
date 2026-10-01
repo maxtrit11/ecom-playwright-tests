@@ -226,6 +226,10 @@ def test_language_switch_preserves_page_content(page: Page):
     # Переключаем на RO
     switch_to_language(page, "ro")
 
+    # Без этой проверки тест зеленел и без смены языка — сравнивал RU с RU
+    # (поймано мутацией 30.09.2026).
+    assert get_lang(page) == "ro", "Язык не переключился — сравнивать контент не с чем"
+
     # Считаем элементы на RO
     elements_ro = page.locator("main a, main img, .product, [class*='card']").count()
 

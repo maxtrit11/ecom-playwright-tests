@@ -92,7 +92,10 @@ def _titles(item) -> tuple[str, str]:
         suite = ""
     try:
         code = item.function.__code__
-        case = _case_title(str(item.path), code.co_firstlineno)
+        # Файл, где функция ОБЪЯВЛЕНА, а не где собрана: мобильная суита
+        # импортирует десктопные тесты целиком, и номер строки относится к
+        # десктопному файлу, а item.path указывает на мобильный.
+        case = _case_title(code.co_filename, code.co_firstlineno)
     except Exception:
         case = ""
     return suite, case

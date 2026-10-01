@@ -52,7 +52,8 @@ DATE_INPUT = ".account-table__filters .mx-input"
 
 # Колонки таблицы НЕ адресуем по номеру: состав меняется. 2026-08-18 из неё
 # убрали «Компанию» и «Общую сумму», и статус уехал с индекса 6 на 5 — тесты,
-# читавшие ячейку по индексу, стали бы брать пустую. Ищем по заголовку.
+# читавшие ячейку по индексу, стали бы брать пустую. Ищем по `data-label`
+# ячейки (см. `_orders`).
 COL_NUMBER = "Номер"
 COL_DATE = "Дата оформления"
 COL_STATUS = "Статус заказа"
@@ -184,37 +185,41 @@ def _wait_table_settled(page: Page, timeout: int = 15_000) -> None:
 def _orders(page: Page) -> list[dict]:
     """Заказы из таблицы: номер, дата оформления и статус по каждой строке.
 
-    Колонки находим по подписи в шапке. Раньше брали по индексу, и когда из
-    таблицы убрали «Компанию» и «Общую сумму» (2026-08-18), статус сместился
-    с 6-й позиции на 5-ю — тесты начали бы читать пустую ячейку и падать на
-    исправном продукте.
+    Колонку ячейки определяем по её собственному `data-label` (у каждой ячейки
+    строки он есть и совпадает с подписью колонки). Раньше брали по индексу —
+    когда из таблицы убрали «Компанию» и «Общую сумму» (2026-08-18), статус
+    сместился с 6-й позиции на 5-ю. Потом — по `innerText` шапки, разбитому
+    по строкам; но в мобильной вёрстке шапка скрыта (`display: none`), и её
+    текст приходит одной строкой через пробелы — находилась только колонка
+    «Номер», дата и статус становились `None` (01.10.2026). `data-label`
+    одинаков на обеих вёрстках: на телефоне из него же рисуется подпись поля
+    в карточке заказа.
     """
-    return page.evaluate(
-        """([numberLabel, dateLabel, statusLabel]) => {
-             const header = document.querySelector(
-               '.account-table__content__table__header');
-             const labels = header
-               ? header.innerText.split('\\n').map(s => s.trim()).filter(Boolean)
-               : [];
-             const idx = (label) => labels.findIndex(
-               l => l.toLowerCase().startsWith(label.toLowerCase()));
-             const iNum = idx(numberLabel);
-             const iDate = idx(dateLabel);
-             const iStatus = idx(statusLabel);
-             return [...document.querySelectorAll(
+    orders = page.evaluate(
+        """([numberLabel, dateLabel, statusLabel]) =>
+             [...document.querySelectorAll(
                '.account-table__content__table__list__row')].map(r => {
-                 const c = [...r.querySelectorAll(
-                   '.account-table__content__table__list__row__item')]
-                   .map(e => e.innerText.replace(/\\s+/g, ' ').trim());
-                 return {
-                   number: iNum >= 0 ? c[iNum] : null,
-                   date: iDate >= 0 ? c[iDate] : null,
-                   status: iStatus >= 0 ? c[iStatus] : null,
+                 const items = [...r.querySelectorAll(
+                   '.account-table__content__table__list__row__item')];
+                 const cell = (label) => {
+                   const c = items.find(e => (e.dataset.label || '')
+                     .toLowerCase().startsWith(label.toLowerCase()));
+                   return c ? c.innerText.replace(/\\s+/g, ' ').trim() : null;
                  };
-               });
-           }""",
+                 return {
+                   number: cell(numberLabel),
+                   date: cell(dateLabel),
+                   status: cell(statusLabel),
+                 };
+               })""",
         [COL_NUMBER, COL_DATE, COL_STATUS],
     )
+    missing = [o for o in orders if None in o.values()]
+    assert not missing, (
+        "У ячеек таблицы заказов не нашлось data-label для номера/даты/статуса — "
+        f"разметка изменилась: {missing[:3]}"
+    )
+    return orders
 
 
 def _order_date(value: str):

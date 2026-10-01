@@ -419,10 +419,13 @@ def test_sort_resets_pagination_to_first_page(page: Page):
     assert "page=2" not in page.url, (
         f"После выбора сортировки в URL остался page=2: {page.url}"
     )
-    if page.locator(PAGINATION).count() > 0:
-        assert _active_page(page) == 1, (
-            "После выбора сортировки пагинация не сбросилась на первую страницу"
-        )
+    # Сортировка не меняет число товаров, поэтому пагинация обязана остаться.
+    # Раньше проверка стояла под `if pagination.count() > 0` — пропади
+    # пагинация совсем, тест прошёл бы, ничего не проверив (30.09.2026).
+    expect(page.locator(PAGINATION).first).to_be_visible(timeout=10_000)
+    assert _active_page(page) == 1, (
+        "После выбора сортировки пагинация не сбросилась на первую страницу"
+    )
 
     # `sort=` в URL здесь СОЗНАТЕЛЬНО не проверяем. Выбор сортировки со стр.2
     # приводит URL к голому `/<категория>`: `page=2` уходит, `sort=` не

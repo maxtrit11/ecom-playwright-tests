@@ -1,0 +1,111 @@
+name: E2E Mobile (stage.ecom.md, Pixel 7)
+
+# Мобильная суита tests/mobile/ — отдельный прогон в эмуляции Pixel 7
+# (профиль задаёт tests/mobile/conftest.py). Обычный `pytest` эту папку
+# пропускает, поэтому путь передаётся явно.
+on:
+  # Раз в неделю, а не каждую ночь: CI-минуты приватного репо уже кончались
+  # (август 2026), а ночной десктоп и так занимает до 2 ч в сутки.
+  #
+  # 05:00 UTC, а не вместе с десктопом (02:00): обе суиты работают с ОДНОЙ
+  # stage-учёткой — меняют ей пароль (кейс 151) и имя (личные данные).
+  # Параллельно они затирают друг другу данные, а смена пароля в двух местах
+  # сразу может оставить учётку с временным паролем. Десктоп ограничен
+  # 120 мин и к 04:00 гарантированно закончен.
+  schedule:
+    - cron: "0 5 * * 0"          # воскресенье, ~08:00 Кишинёв
+  workflow_dispatch:
+    inputs:
+      markers:
+        description: 'Выражение -m (пусто = вся мобильная суита)'
+        default: ''
+        required: false
+      paths:
+        description: 'Пути внутри tests/mobile (пусто = вся папка)'
+        default: ''
+        required: false
+      k_filter:
+        description: 'Фильтр -k по именам тестов (пусто = без фильтра)'
+        default: ''
+        required: false
+
+# Две мобильные одновременно не нужны. С ночным десктопом не пересекаемся
+# расписанием (см. выше); ручной запуск во время ночного — на совести
+# запускающего.
+concurrency:
+  group: e2e-mobile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e-mobile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Только chromium: Firefox не умеет `is_mobile`, мобильный conftest его
+      # скипает; touch-жесты (свайпы слайдеров) идут через CDP — тоже chromium.
+      - name: Install Playwright browser (chromium)
+        run: python -m playwright install --with-deps chromium
+
+      - name: Provision test credentials
+        env:
+          USERS_JSON: ${{ secrets.USERS_JSON }}
+        run: |
+          if [ -n "$USERS_JSON" ]; then
+            printf '%s' "$USERS_JSON" > tests/fixtures/users.json
+            echo "users.json written from secret"
+          else
+            cp tests/fixtures/users.example.json tests/fixtures/users.json
+            echo "::warning::USERS_JSON secret not set — using example creds (кабинет упадёт)"
+          fi
+
+      # Мобильные тесты корзины/чекаута написаны под Вид 1 (поп-ап). Вид
+      # приводим к нужному, а не надеемся на него — подробности в e2e.yml.
+      - name: Ensure cart view 1
+        continue-on-error: true
+        env:
+          ALLOW_CART_VIEW_SWITCH: "1"
+        run: python tools/cart_view.py set default
+
+      # Headed под Xvfb по той же причине, что и десктоп: в headless стенд
+      # блокирует реальные сабмиты (предзаказ и пр.) бот-защитой.
+      # --timeout / --session-timeout / --reruns 1 — как в e2e.yml.
+      - name: Run mobile E2E tests (headed via Xvfb)
+        env:
+          MARKERS: ${{ inputs.markers }}
+          PATHS: ${{ inputs.paths }}
+          K_FILTER: ${{ inputs.k_filter }}
+        run: |
+          echo "Прогон: ${MARKERS:+-m \"$MARKERS\"}${MARKERS:-вся мобильная суита}${PATHS:+ | пути: $PATHS}${K_FILTER:+ | -k $K_FILTER}"
+          xvfb-run --auto-servernum \
+            pytest --headed --browser chromium \
+                   ${PATHS:-tests/mobile} \
+                   ${MARKERS:+-m "$MARKERS"} \
+                   ${K_FILTER:+-k "$K_FILTER"} \
+                   --reruns 1 \
+                   --timeout=120 \
+                   --session-timeout=5400 \
+                   --screenshot=only-on-failure \
+                   --output=test-results \
+                   --html=report-mobile.html --self-contained-html \
+                   --css=assets/report.css
+
+      - name: Upload HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-html-report-mobile
+          path: report-mobile.html
+          retention-days: 2

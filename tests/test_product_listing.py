@@ -27,6 +27,7 @@ import pytest
 from playwright.sync_api import Page, expect
 
 from conftest import CART_VIEW_POPUP
+from test_price_consistency import _bani
 
 # Категория по умолчанию — из ручного кейса. Русская локаль принципиальна:
 # тексты плашки («Товар был добавлен в корзину») проверяются по-русски.
@@ -419,15 +420,17 @@ def test_sorting_keeps_active_filters(page: Page):
         "После сортировки изменилось число карточек в выдаче"
     )
 
-    prices = page.evaluate(
-        """() => [...document.querySelectorAll('.product__items .product__item')]
-            .filter(c => !c.querySelector('.product__out-of-stock-label'))
-            .map(c => {
-                const n = c.querySelector('.product__prices .no-discount');
-                if (!n) return null;
-                const v = parseInt(n.textContent.replace(/[^\\d]/g, ''));
-                return isNaN(v) ? null : v;
-            })
-            .filter(v => v != null);"""
+    # Цены дробные («5 099.15 MDL») — разбираем в бани через `_bani`. Прежний
+    # parseInt по всем цифрам склеивал копейки с целой частью (509915), и
+    # порядок таких чисел мог не совпасть с порядком цен.
+    #
+    # Цену берём из всего блока `.product__prices` (первая сумма в нём —
+    # текущая цена), а не из `.no-discount`: тот есть только у товаров без
+    # скидки, и в отфильтрованной выдаче из двух-трёх карточек в проверку
+    # попадала одна цена — порядок одной цены «верен» всегда (30.09.2026).
+    texts = page.locator(f"{GRID} {CARD} .product__prices").all_inner_texts()
+    prices = [_bani(t) for t in texts if "MDL" in t]
+    assert len(prices) >= 2, f"В отфильтрованной выдаче меньше двух цен: {texts}"
+    assert prices == sorted(prices), (
+        f"Цены в отфильтрованной выдаче не по возрастанию: {[p / 100 for p in prices]}"
     )
-    assert prices == sorted(prices), f"Цены в отфильтрованной выдаче не по возрастанию: {prices}"

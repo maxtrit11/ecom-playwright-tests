@@ -6,6 +6,33 @@ from pathlib import Path
 import pytest
 
 
+# ---------------------------------------------------------------------------
+# Мобильная версия — отдельный прогон.
+#
+# tests/mobile/ гоняется в эмуляции телефона (см. tests/mobile/conftest.py) и в
+# обычный `pytest` НЕ попадает: десктопная суита и её CI остаются как были.
+# Мобильные тесты собираются, только когда путь к ним передан явно:
+#   pytest tests/mobile
+#   pytest tests/mobile/test_catalog_menu_mobile.py -k close
+# ---------------------------------------------------------------------------
+_MOBILE_DIR = Path(__file__).parent / "tests" / "mobile"
+
+
+def _mobile_requested(config) -> bool:
+    base = Path(config.invocation_params.dir)
+    for arg in config.args:
+        target = (base / arg.split("::")[0]).resolve()
+        if target == _MOBILE_DIR or _MOBILE_DIR in target.parents:
+            return True
+    return False
+
+
+def pytest_ignore_collect(collection_path, config):
+    if collection_path == _MOBILE_DIR and not _mobile_requested(config):
+        return True
+    return None
+
+
 @pytest.fixture(scope="session")
 def browser_context_args(browser_context_args):
     return {

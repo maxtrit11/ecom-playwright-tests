@@ -104,9 +104,11 @@ def test_empty_fields_show_validation_errors(page: Page):
     # Нажать кнопку «Зарегистрироваться» не заполняя поля
     modal.locator('button[type="submit"]').first.click()
 
-    # Под обязательными полями отображаются сообщения об ошибке
+    # Под обязательными полями отображаются сообщения об ошибке. Ждём третье,
+    # а не считаем сразу: мгновенный count() после клика мог успеть раньше,
+    # чем Vue дорисует ошибки.
     visible_validations = modal.locator(".validation:visible")
-    assert visible_validations.count() >= 3
+    expect(visible_validations.nth(2)).to_be_visible(timeout=10_000)
 
     # Регистрация не выполняется — поп-ап остаётся открытым
     expect(page.get_by_role("heading", name="Регистрация")).to_be_visible()
