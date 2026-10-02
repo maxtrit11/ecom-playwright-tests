@@ -15,6 +15,7 @@ import re
 
 import pytest
 from playwright.sync_api import Page, expect
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from test_cart_block import (  # noqa: F401 — only_popup_cart_view: autouse-фикстура
     BTN_ADD_TO_CART,
@@ -104,7 +105,22 @@ def cart_with_product(page: Page, in_stock_product: str):
         )
     _close_drawer(page, page.locator(BTN_CLOSE))
 
-    _click_add_to_cart(page)
+    # Корзину на этой странице уже открывали, поэтому после добавления сайт
+    # ~через 1 с перечитывает её с сервера (GET /api/cart-redis). Серверная копия —
+    # с `productId` строкой, как на PDP; число из него делает открытие корзины.
+    # Откроем корзину раньше этого GET — он затрёт исправленный id обратно
+    # строкой, и заказ уйдёт с "12563" → 400 «При создании заказа произошла
+    # ошибка» (мобильный happy path на Partybox, разбор 02.10.2026). Человек
+    # быстрее секунды корзину не открывает, поэтому ждём синхронизацию, как он.
+    # Не дождались — идём дальше: GET мог и не понадобиться.
+    try:
+        with page.expect_response(
+            lambda r: "/api/cart-redis" in r.url and r.request.method == "GET",
+            timeout=5_000,
+        ):
+            _click_add_to_cart(page)
+    except PlaywrightTimeoutError:
+        pass
     _open_cart_drawer(page)
     expect(page.locator(CART_PRODUCT).first).to_be_visible(timeout=10_000)
     return page
