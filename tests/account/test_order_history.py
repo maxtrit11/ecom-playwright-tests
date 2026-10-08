@@ -618,14 +618,47 @@ def find_unfavorited_row(page: Page):
     pytest.skip("Все заказы на странице уже в избранном — нечего отмечать")
 
 
+TOGGLE_FAV_URL = "/toggle-favorite"
+
+
 def toggle_favorite(page: Page, row, expect_active: bool) -> None:
-    """Кликнуть звезду и дождаться нового состояния."""
-    row.locator(ORDER_FAV_BTN).click()
-    star = row.locator(ORDER_FAV_ACTIVE)
-    if expect_active:
-        expect(star).to_have_count(1, timeout=15_000)
-    else:
-        expect(star).to_have_count(0, timeout=15_000)
+    """Кликнуть звезду и дождаться нового состояния.
+
+    Звезда перерисовывается только по ответу POST …/toggle-favorite/, а на
+    stage он идёт до 6+ с — ждём сам ответ, а не 15 с перерисовки. Эндпоинт
+    именно переключает, а не ставит значение: два запроса подряд возвращают
+    заказ в исходное состояние, при этом звезда успевает мигнуть нужным
+    цветом. Так выглядело падение 08.10 в мобильном CI (звезда горит, после
+    перезагрузки — нет), поэтому число запросов проверяем явно.
+    """
+    sent = []
+
+    def on_request(req):
+        if TOGGLE_FAV_URL in req.url and req.method == "POST":
+            sent.append(req.url)
+
+    page.on("request", on_request)
+    try:
+        with page.expect_response(
+            lambda r: TOGGLE_FAV_URL in r.url, timeout=30_000
+        ) as resp_info:
+            row.locator(ORDER_FAV_BTN).click()
+        body = resp_info.value.json()
+        assert body.get("is_favorite") is expect_active, (
+            f"Сервер ответил {body} на переключение избранного, "
+            f"ожидали is_favorite={expect_active}"
+        )
+
+        star = row.locator(ORDER_FAV_ACTIVE)
+        expect(star).to_have_count(1 if expect_active else 0, timeout=15_000)
+        # Окно для запоздалого второго запроса
+        page.wait_for_timeout(1_500)
+    finally:
+        page.remove_listener("request", on_request)
+    assert len(sent) == 1, (
+        f"Один клик по звезде отправил {len(sent)} запросов toggle-favorite — "
+        f"избранное переключилось туда и обратно: {sent}"
+    )
 
 
 def select_favorite_filter(page: Page, option: str) -> None:

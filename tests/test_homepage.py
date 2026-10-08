@@ -343,7 +343,9 @@ def test_video_block_links_to_reviews(page: Page):
     if not block.count():
         pytest.skip("Блока видео-обзоров нет на главной")
 
-    block.locator('a[href*="/review"]').first.click()
+    # «Все видео-обзоры» в блоке две: десктопная в шапке блока и мобильная
+    # под видео, вторая из них скрыта display:none — берём видимую.
+    block.locator('a[href*="/review"]:visible').first.click()
 
     expect(page).to_have_url(re.compile(r"/review"), timeout=30_000)
     expect(page.locator("h1")).to_be_visible(timeout=20_000)
