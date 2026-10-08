@@ -273,6 +273,16 @@ def _md(text: str) -> str:
     return (text or "").replace("|", "\\|").replace("\n", " ").strip()
 
 
+def _target(config) -> str:
+    """Что проверяли: stage из base_url или то, что задал job (прод — QA_TARGET)."""
+    return (
+        os.environ.get("QA_TARGET")
+        or config.getoption("base_url", None)
+        or config.getini("base_url")
+        or ""
+    )
+
+
 def _write_github_summary(config, stats: dict) -> None:
     path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not path:
@@ -285,7 +295,10 @@ def _write_github_summary(config, stats: dict) -> None:
 
     out: list[str] = []
     verdict = "❌ есть падения" if broken else ("⚠️ прошло с оговорками" if flaky else "✅ всё зелёное")
-    out.append(f"## Результаты E2E — {verdict}")
+    # Один workflow может писать несколько сводок (stage и прод) — заголовок
+    # задаёт job через окружение.
+    title = os.environ.get("QA_SUMMARY_TITLE") or "Результаты E2E"
+    out.append(f"## {title} — {verdict}")
     out.append("")
     out.append(
         f"**{stats['total']}** {_plural_tests(stats['total'])} за **{_fmt_duration(stats['duration'])}**"
@@ -299,7 +312,7 @@ def _write_github_summary(config, stats: dict) -> None:
     out.append("")
 
     env_bits = []
-    base_url = config.getoption("base_url", None) or config.getini("base_url") or ""
+    base_url = _target(config)
     if base_url:
         env_bits.append(f"стенд `{base_url}`")
     browsers = config.getoption("browser", None) or []
@@ -414,7 +427,7 @@ def pytest_configure(config):
     for noisy in ("Packages", "Plugins"):
         meta.pop(noisy, None)
 
-    base_url = config.getoption("base_url", None) or config.getini("base_url") or ""
+    base_url = _target(config)
     if base_url:
         meta["Стенд"] = base_url
     meta.pop("Base URL", None)
@@ -439,7 +452,8 @@ def pytest_configure(config):
 
 
 def pytest_html_report_title(report):
-    report.title = f"E2E stage.ecom.md — {time.strftime('%d.%m.%Y %H:%M')}"
+    name = os.environ.get("QA_SUMMARY_TITLE") or "E2E stage.ecom.md"
+    report.title = f"{name} — {time.strftime('%d.%m.%Y %H:%M')}"
 
 
 def pytest_html_results_summary(prefix, summary, postfix):

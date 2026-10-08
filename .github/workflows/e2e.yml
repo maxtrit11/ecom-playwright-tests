@@ -247,3 +247,57 @@ jobs:
             report.html
             report-cart-view2.html
           retention-days: 2
+
+  # ===========================================================================
+  # Прод «только чтение»: jblstore.md и alo.md (tests/prod).
+  #
+  # Отдельный job, параллельно с e2e: ~3 мин, на stage не влияет, результат —
+  # своей сводкой на той же странице прогона. На проде ТОЛЬКО просмотр:
+  # никаких заказов, заявок, логина и корзины (правило — в докстринге файла).
+  #
+  # Только на полном прогоне: если вручную гоняют кусок суиты (paths/markers/-k),
+  # прод не нужен.
+  #
+  # Headless, без Xvfb: Xvfb нужен stage ради сабмитов форм под бот-защитой,
+  # а здесь сабмитов нет.
+  # ===========================================================================
+  prod-readonly:
+    if: ${{ !inputs.paths && !inputs.markers && !inputs.k_filter }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright browser (chromium)
+        run: python -m playwright install --with-deps chromium
+
+      - name: Run prod read-only checks
+        env:
+          QA_SUMMARY_TITLE: "Прод — только чтение"
+          QA_TARGET: "https://jblstore.md, https://alo.md"
+        run: |
+          pytest tests/prod --browser chromium \
+                 --reruns 1 \
+                 --timeout=120 \
+                 --screenshot=only-on-failure \
+                 --output=test-results-prod \
+                 --html=report-prod.html --self-contained-html \
+                 --css=assets/report.css
+
+      - name: Upload prod report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prod-readonly-report
+          path: report-prod.html
+          retention-days: 2

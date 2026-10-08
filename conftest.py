@@ -16,19 +16,23 @@ import pytest
 #   pytest tests/mobile/test_catalog_menu_mobile.py -k close
 # ---------------------------------------------------------------------------
 _MOBILE_DIR = Path(__file__).parent / "tests" / "mobile"
+# Прод (tests/prod) — так же только по явному пути: ночная суита и локальный
+# `pytest` ходят на stage, на прод — лишь отдельный job «только чтение».
+_PROD_DIR = Path(__file__).parent / "tests" / "prod"
+_EXPLICIT_ONLY_DIRS = (_MOBILE_DIR, _PROD_DIR)
 
 
-def _mobile_requested(config) -> bool:
+def _dir_requested(config, directory: Path) -> bool:
     base = Path(config.invocation_params.dir)
     for arg in config.args:
         target = (base / arg.split("::")[0]).resolve()
-        if target == _MOBILE_DIR or _MOBILE_DIR in target.parents:
+        if target == directory or directory in target.parents:
             return True
     return False
 
 
 def pytest_ignore_collect(collection_path, config):
-    if collection_path == _MOBILE_DIR and not _mobile_requested(config):
+    if collection_path in _EXPLICIT_ONLY_DIRS and not _dir_requested(config, collection_path):
         return True
     return None
 
@@ -786,4 +790,4 @@ def logout(page) -> None:
 # Отчётность (терминальная сводка, HTML, сводка для GitHub Actions) вынесена
 # в reporting.py: здесь — поведение тестов, там — представление результатов.
 # ---------------------------------------------------------------------------
-pytest_plugins = ("reporting",)
+pytest_plugins = ("reporting", "page_errors")
