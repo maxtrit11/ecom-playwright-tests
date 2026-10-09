@@ -451,8 +451,8 @@ def credit_product(browser, base_url) -> str:
 
 # ---------------------------------------------------------------------------
 # Глобально гасим оверлеи, которые перехватывают клики и валят тесты.
-# На каждой загрузке странички инжектим CSS и MutationObserver, который убивает
-# такие элементы по мере появления.
+# На каждой загрузке странички инжектим CSS, который прячет такие элементы и
+# делает их некликабельными (из DOM не удаляем — почему, см. ниже).
 #
 # 1. `[class*="b24-widget"]` — виджет Bitrix24, ловит клики по хедеру/футеру.
 # 2. `.ecom-modal` — промо-попап «До 10% скидки» (`position: fixed`, z-index 100).
@@ -490,6 +490,16 @@ _OVERLAY_SELECTORS = '[class*="b24-widget"], .ecom-modal, .cookie-banner'
 # чекауте виджет и без того сносится вручную (`_hide_b24_widget`). Постоянный
 # cookie-баннер разницу и вскрыл.
 # Поэтому ставим перехват, как только появится корень документа.
+#
+# ТОЛЬКО прячем через CSS, из DOM НЕ удаляем. До 09.10.2026 скрипт ещё и делал
+# `el.remove()` — и ломал Vue: cookie-баннер это узел, которым управляет Vue, и
+# после его выдёргивания приложение переставало дорисовывать часть компонентов.
+# Наблюдаемо: в мобильном поп-апе фильтров поля цены не появлялись вовсе (на
+# их месте пустые `<!---->`), прайс-тесты уходили в ложный skip «нет полей
+# ценового фильтра» в каждом прогоне. Замер под Pixel 7: с remove() полей 0
+# из 3 загрузок, только CSS — поля есть каждый раз. Чтобы клики проходили,
+# хватает `display: none` + `pointer-events: none`. Наблюдатель лишь
+# возвращает наш <style>, если Nuxt перепишет <head>.
 _HIDE_OVERLAYS_SCRIPT = """
 (() => {
   const SEL = '%s';
@@ -499,10 +509,11 @@ _HIDE_OVERLAYS_SCRIPT = """
     installed = true;
     const style = document.createElement('style');
     style.textContent = SEL + ' { display: none !important; visibility: hidden !important; pointer-events: none !important; }';
-    (document.head || document.documentElement).appendChild(style);
-    const kill = () => document.querySelectorAll(SEL).forEach(el => el.remove());
-    kill();
-    new MutationObserver(kill).observe(document.documentElement, { childList: true, subtree: true });
+    const attach = () => {
+      if (!style.isConnected) (document.head || document.documentElement).appendChild(style);
+    };
+    attach();
+    new MutationObserver(attach).observe(document.documentElement, { childList: true, subtree: true });
   };
   install();
   if (!installed) {

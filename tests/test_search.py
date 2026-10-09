@@ -18,7 +18,8 @@ BTN_SEARCH = ".header__items .btn__search"
 BTN_DELETE = ".header__items .btn__delete"
 MODAL_SEARCH = ".header__items .modal__search"
 MODAL_SEARCH_SHOW = ".header__items .modal__search.show"
-POPULAR_BADGES = ".header__items .badges.search .badge"
+# Значок запроса: был `.badge`, с октября 2026 — `button.ecom-popular-search-badge`.
+POPULAR_BADGES = ".header__items .badges.search :is(.badge, .ecom-popular-search-badge)"
 RESULT_PRODUCT = ".header__items .result__product"
 PRODUCT_NAME = ".product__name"
 PRODUCT_PRICE = ".product__price"
@@ -111,14 +112,14 @@ def test_popular_queries_displayed_on_focus(page: Page):
     """При клике на поле поиска отображается блок «Популярные запросы»,
     клик по запросу подставляет значение и выполняет поиск."""
     page.locator(SEARCH_INPUT).click()
-    page.wait_for_timeout(500)
 
-    # На стейдже блок «Популярных запросов» появляется только после ввода
-    # символа; .modal__search.show на пустом фокусе не подсвечивается и
-    # бейджей не рендерится. Скипаем — фича в текущей реализации отсутствует.
+    # Запросы задаются в админке; если их не завели — блока нет, и это не
+    # дефект. Ждём, а не считаем сразу: мгновенный count() давал ложный skip.
     badges = page.locator(POPULAR_BADGES)
-    if badges.count() == 0:
-        pytest.skip("Блок «Популярные запросы» не реализован на стейдже")
+    try:
+        badges.first.wait_for(state="visible", timeout=8_000)
+    except Exception:
+        pytest.skip("Блок «Популярные запросы» пуст — в админке не заведено ни одного запроса")
 
     expect(page.locator(MODAL_SEARCH_SHOW)).to_be_visible(timeout=5_000)
     expect(badges.first).to_be_visible(timeout=5_000)

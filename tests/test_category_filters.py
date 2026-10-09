@@ -46,6 +46,11 @@ CHECKBOX_ITEM = ".filters-vertical__content__params__item__content__checkboxes__
 CHECKBOX_LABEL = f"{CHECKBOX_ITEM} label"
 PRICE_CONTENT = ".filters-vertical__content__params__item__content__price"
 PRICE_INPUTS = f"{PRICE_CONTENT}__inputs input"
+# Поля цены приходят асинхронно, отдельно от остальных групп: заголовок
+# «Preț 0 - 2380 MDL» уже есть, а на месте полей пустые `<!---->`. Замер
+# 09.10.2026: 2-13 с, изредка дольше 15 с. С общими 10 с мобильный прайс-фильтр
+# уходил в ложный skip «нет полей ценового фильтра» в каждом прогоне.
+PRICE_INPUTS_TIMEOUT = 25_000
 IN_STOCK_TOGGLE = ".filters-vertical__in-stock"
 FOUND_GOODS = ".filters-vertical__header__found-goods"
 
@@ -381,7 +386,7 @@ def test_multiple_filters_narrow_results(page: Page):
 def test_price_filter_narrows_results(page: Page):
     """В прайс-блоке уменьшить значение max — счётчик не вырос."""
     inputs = _sidebar(page).locator(PRICE_INPUTS)
-    if not _present(inputs, 2):
+    if not _present(inputs, 2, timeout=PRICE_INPUTS_TIMEOUT):
         pytest.skip("На этой категории нет полей ценового фильтра")
 
     count_before = _found_count(page)
@@ -514,7 +519,7 @@ def test_price_filter_keeps_prices_within_range(page: Page):
     Здесь сверяем сами цены.
     """
     inputs = _sidebar(page).locator(PRICE_INPUTS)
-    if not _present(inputs, 2):
+    if not _present(inputs, 2, timeout=PRICE_INPUTS_TIMEOUT):
         pytest.skip("На этой категории нет полей ценового фильтра")
 
     prices_before = _visible_prices_bani(page)

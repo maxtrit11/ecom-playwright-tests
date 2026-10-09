@@ -23,6 +23,7 @@ from test_category_filters import (
     FILTER_GROUP,
     IN_STOCK_TOGGLE,
     PRICE_INPUTS,
+    PRICE_INPUTS_TIMEOUT,
     PRODUCT_CARD,
     _commit_price_input,
     _present,
@@ -84,6 +85,14 @@ def _open_filters(page: Page) -> Locator:
     expect(panel).to_be_visible()
     expect(panel.locator(FILTER_GROUP).first).to_be_visible(timeout=15_000)
     return panel
+
+
+def _close_filters_by_x(page: Page) -> None:
+    """Закрыть поп-ап крестиком — как пользователь после фильтрации — и
+    дождаться, что он закрылся, а под ним видна отфильтрованная выдача."""
+    page.locator(BTN_CLOSE).tap()
+    expect(_panel(page)).to_have_count(0)
+    expect(page.locator(PRODUCT_CARD).first).to_be_visible()
 
 
 def _found_count(page: Page) -> int:
@@ -300,7 +309,7 @@ def test_multiple_filters_narrow_results(page: Page):
 # ===========================================================================
 def test_price_filter_narrows_results(page: Page):
     inputs = _panel(page).locator(PRICE_INPUTS)
-    if not _present(inputs, 2):
+    if not _present(inputs, 2, timeout=PRICE_INPUTS_TIMEOUT):
         pytest.skip("На этой категории нет полей ценового фильтра")
 
     before = _found_count(page)
@@ -316,15 +325,24 @@ def test_price_filter_narrows_results(page: Page):
     after = _found_count(page)
     assert after <= before, f"После сужения цены выдача выросла: {before} → {after}"
 
+    # Закрываем поп-ап на «X» и смотрим уже на саму страницу: товары дороже
+    # нового максимума остаться не должны.
+    _close_filters_by_x(page)
+    too_expensive = [p for p in _visible_prices_bani(page) if p > int(new_max) * 100]
+    assert not too_expensive, (
+        f"После закрытия фильтра на странице товары дороже {new_max} MDL: "
+        f"{[p / 100 for p in too_expensive]}"
+    )
+
 
 # ===========================================================================
 # 9 (моб.). Прайс-фильтр: цены в выдаче попадают в заданный интервал
 # ===========================================================================
 def test_price_filter_keeps_prices_within_range(page: Page):
-    """Карточки под поп-апом перестраиваются сразу — цены читаем оттуда.
-    Почему сверяем цены, а не только счётчик, — см. десктопный тест."""
+    """Задать интервал цены, закрыть поп-ап на «X» и сверить цены товаров на
+    странице. Почему сверяем цены, а не только счётчик, — см. десктопный тест."""
     inputs = _panel(page).locator(PRICE_INPUTS)
-    if not _present(inputs, 2):
+    if not _present(inputs, 2, timeout=PRICE_INPUTS_TIMEOUT):
         pytest.skip("На этой категории нет полей ценового фильтра")
 
     prices_before = _visible_prices_bani(page)
@@ -339,6 +357,7 @@ def test_price_filter_keeps_prices_within_range(page: Page):
 
     _commit_price_input(page, inputs.first, str(min_mdl), "min")
     _commit_price_input(page, inputs.last, str(max_mdl), "max")
+    _close_filters_by_x(page)
 
     prices_after = _visible_prices_bani(page)
     if not prices_after:

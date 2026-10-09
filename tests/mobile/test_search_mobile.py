@@ -51,7 +51,8 @@ SEARCH_PANEL = f"{M} #header-content.show"
 SEARCH_INPUT = f"{M} #search__input"
 BTN_DELETE = f"{M} .btn__delete"
 MODAL_SEARCH_SHOW = f"{M} .modal__search.show"
-POPULAR_BADGES = f"{M} .badges.search .badge"
+# Значок запроса: был `.badge`, с октября 2026 — `button.ecom-popular-search-badge`.
+POPULAR_BADGES = f"{M} .badges.search :is(.badge, .ecom-popular-search-badge)"
 RESULT_PRODUCT = f"{M} .result__product"
 ALL_RESULTS_LINK = f"{M} #allSearchResults"
 MESSAGE_NO_RESULTS = f"{M} .message"
@@ -175,10 +176,11 @@ def test_popular_queries_displayed_on_focus(page: Page):
     запросу подставляет его в поле."""
     _open_search(page)
     badges = page.locator(POPULAR_BADGES)
-    if badges.count() == 0:
-        pytest.skip("Блок «Популярные запросы» не реализован на стейдже")
+    try:
+        badges.first.wait_for(state="visible", timeout=8_000)
+    except Exception:
+        pytest.skip("Блок «Популярные запросы» пуст — в админке не заведено ни одного запроса")
 
-    expect(badges.first).to_be_visible(timeout=5_000)
     badges.first.tap()
     expect(page.locator(SEARCH_INPUT)).not_to_have_value("", timeout=5_000)
 
