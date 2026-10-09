@@ -790,4 +790,4 @@ def logout(page) -> None:
 # Отчётность (терминальная сводка, HTML, сводка для GitHub Actions) вынесена
 # в reporting.py: здесь — поведение тестов, там — представление результатов.
 # ---------------------------------------------------------------------------
-pytest_plugins = ("reporting", "page_errors")
+pytest_plugins = ("reporting",)
