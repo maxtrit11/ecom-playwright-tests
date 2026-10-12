@@ -87,6 +87,7 @@ jobs:
           MARKERS: ${{ inputs.markers }}
           PATHS: ${{ inputs.paths }}
           K_FILTER: ${{ inputs.k_filter }}
+          QA_RESULTS_JSON: results-mobile.json
         run: |
           echo "Прогон: ${MARKERS:+-m \"$MARKERS\"}${MARKERS:-вся мобильная суита}${PATHS:+ | пути: $PATHS}${K_FILTER:+ | -k $K_FILTER}"
           xvfb-run --auto-servernum \
@@ -109,3 +110,13 @@ jobs:
           name: pytest-html-report-mobile
           path: report-mobile.html
           retention-days: 2
+
+      # Итоги — в Telegram-канал QA (бот @alsodev_uptime_bot), HTML-отчёт —
+      # файлом следом. `always()`: о красном или оборванном прогоне канал
+      # должен узнать в первую очередь. Ошибка отправки прогон не валит.
+      - name: Notify Telegram
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python tools/notify_telegram.py results-mobile.json,report-mobile.html

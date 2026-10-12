@@ -252,6 +252,46 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     except Exception as exc:  # оформление отчёта не должно ронять прогон
         tr.write_line(f"   (сводка для GitHub не записана: {exc})")
 
+    try:
+        _write_results_json(stats)
+    except Exception as exc:
+        tr.write_line(f"   (итоги в JSON не записаны: {exc})")
+
+
+# ---------------------------------------------------------------------------
+# Итоги в JSON ($QA_RESULTS_JSON) — для уведомления в Telegram
+# ---------------------------------------------------------------------------
+def _write_results_json(stats: dict) -> None:
+    """Короткие итоги прогона для tools/notify_telegram.py.
+
+    Пишем, только если job задал путь: локальному прогону файл не нужен.
+    Парсить report.html ради тех же цифр хрупко — счётчики уже посчитаны здесь,
+    с честно схлопнутыми повторами.
+    """
+    path = os.environ.get("QA_RESULTS_JSON")
+    if not path:
+        return
+    import json
+
+    recs = stats["records"]
+    data = {
+        "title": os.environ.get("QA_SUMMARY_TITLE") or "Результаты E2E",
+        **{k: stats[k] for k in ("total", "passed", "failed", "error", "skipped", "flaky", "duration")},
+        "broken": [
+            {
+                "label": _label(r),
+                "suite": r["suite"],
+                "outcome": r["outcome"],
+                "nodeid": r["nodeid"],
+                "error": _error_tail(r["error"]).splitlines()[-1][:300],
+            }
+            for r in recs
+            if r["outcome"] in ("failed", "error")
+        ],
+    }
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=1)
+
 
 # ---------------------------------------------------------------------------
 # Сводка на странице прогона в GitHub Actions ($GITHUB_STEP_SUMMARY)

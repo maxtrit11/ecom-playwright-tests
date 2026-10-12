@@ -159,6 +159,7 @@ jobs:
           MARKERS: ${{ inputs.markers }}
           PATHS: ${{ inputs.paths }}
           K_FILTER: ${{ inputs.k_filter }}
+          QA_RESULTS_JSON: results.json
         run: |
           echo "Прогон: ${MARKERS:+-m \"$MARKERS\"}${MARKERS:-вся суита}${PATHS:+ | пути: $PATHS}${K_FILTER:+ | -k $K_FILTER}"
           # -m подставляем ТОЛЬКО когда маркеры заданы: пустое `-m ""` — это не
@@ -214,6 +215,9 @@ jobs:
       # по-прежнему не стартует.
       - name: Run cart view 2 tests
         if: ${{ !cancelled() && steps.switch_cart.outcome == 'success' }}
+        env:
+          QA_SUMMARY_TITLE: "Корзина — Вид 2"
+          QA_RESULTS_JSON: results-cart-view2.json
         run: |
           xvfb-run --auto-servernum \
             pytest --headed --browser chromium \
@@ -253,3 +257,13 @@ jobs:
             report.html
             report-cart-view2.html
           retention-days: 2
+
+      # Итоги — в Telegram-канал QA (бот @alsodev_uptime_bot), HTML-отчёт —
+      # файлом следом. `always()`: о красном или оборванном прогоне канал
+      # должен узнать в первую очередь. Ошибка отправки прогон не валит.
+      - name: Notify Telegram
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python tools/notify_telegram.py results.json,report.html results-cart-view2.json,report-cart-view2.html
