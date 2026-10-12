@@ -151,6 +151,30 @@ def _active_bullet_index(page: Page) -> int:
     return -1
 
 
+def _find_on_page(page: Page, selector: str):
+    """Первый элемент `selector`, прокручивая страницу сверху вниз.
+
+    Мгновенный count() сразу после загрузки не годится: часть блоков главной
+    монтируется лениво по мере прокрутки, и тест уходил в skip «блока нет».
+    Возвращает локатор или None, если элемента нет на всей странице.
+    """
+    locator = page.locator(selector).first
+    height = page.evaluate("() => document.body.scrollHeight")
+    y = 0
+    while True:
+        if locator.count():
+            return locator
+        if y > height:
+            return None
+        y += 700
+        page.evaluate("(y) => window.scrollTo(0, y)", y)
+        try:
+            locator.wait_for(state="attached", timeout=700)
+            return locator
+        except Exception:
+            height = page.evaluate("() => document.body.scrollHeight")
+
+
 def _first_card_matching(page: Page, *inner_selectors: str):
     """Первая карточка любой карусели, внутри которой есть всё перечисленное.
 
@@ -209,15 +233,27 @@ def test_slider_bullet_switches_active_slide(page: Page):
     Отсчитываем цель от текущего индекса, а не берём фиксированный: у слайдера
     автоплей, и к моменту клика активным может быть любой слайд.
     """
+    # Буллеты Swiper строит после инициализации — мгновенный count() мог дать
+    # ложный skip. Ждём второй буллет, потом считаем.
+    try:
+        page.locator(SLIDER_BULLET).nth(1).wait_for(state="attached", timeout=15_000)
+    except Exception:
+        pass
     total = page.locator(SLIDER_BULLET).count()
-    if total < 2:
-        pytest.skip("В слайдере меньше двух слайдов — переключать нечего")
+    if total < 3:
+        pytest.skip("В слайдере меньше трёх слайдов — нельзя выбрать буллет вне хода автоплея")
 
-    target = (_active_bullet_index(page) + total // 2) % total
+    # Цель — ПРЕДЫДУЩИЙ слайд (или последний, если активен первый). Автоплей
+    # (delay 5 с, `disableOnInteraction: false`) ходит только вперёд, до неё
+    # ему много шагов. Прежняя цель «+половина» с потолком 15 с достигалась
+    # автоплеем и без клика — мёртвый буллет проходил тест.
+    current = _active_bullet_index(page)
+    target = current - 1 if current > 0 else total - 1
     page.locator(SLIDER_BULLET).nth(target).click()
 
+    # Клик срабатывает сразу; 3 с — меньше одного шага автоплея.
     expect(page.locator(SLIDER_BULLET).nth(target)).to_have_class(
-        re.compile(BULLET_ACTIVE_CLASS), timeout=15_000
+        re.compile(BULLET_ACTIVE_CLASS), timeout=3_000
     )
 
 
@@ -293,8 +329,8 @@ def test_product_card_opens_product_page(page: Page):
 
 def test_see_all_opens_selection_page(page: Page):
     """Кнопка «Смотреть все» у карусели открывает подборку с товарами."""
-    link = page.locator(f"{CAROUSEL} {BTN_SEE_ALL}").first
-    if not link.count():
+    link = _find_on_page(page, f"{CAROUSEL} {BTN_SEE_ALL}")
+    if link is None:
         pytest.skip("Ни у одной карусели на главной нет кнопки «Смотреть все»")
 
     link.click()
@@ -308,8 +344,8 @@ def test_see_all_opens_selection_page(page: Page):
 # ===========================================================================
 def test_promo_block_links_to_all_offers(page: Page):
     """Блок «Акции» показывает акции и ведёт на страницу всех акций."""
-    promo = page.locator(PROMO).first
-    if not promo.count():
+    promo = _find_on_page(page, PROMO)
+    if promo is None:
         pytest.skip("Блока «Акции» нет на главной")
 
     assert promo.locator(PROMO_ITEM).count() >= 1, "В блоке «Акции» не отрисовано ни одной акции"
@@ -325,9 +361,9 @@ def test_promo_block_links_to_all_offers(page: Page):
 
 def test_brands_block_opens_brand_page(page: Page):
     """Ссылка из блока «Бренды» открывает страницу бренда с товарами."""
-    link = page.locator(f'{BLOCKS} a[href*="/brands/"]').last
-    if not link.count():
+    if _find_on_page(page, f'{BLOCKS} a[href*="/brands/"]') is None:
         pytest.skip("На главной нет блока «Бренды»")
+    link = page.locator(f'{BLOCKS} a[href*="/brands/"]').last
 
     href = link.get_attribute("href") or ""
     link.click()
@@ -339,8 +375,8 @@ def test_brands_block_opens_brand_page(page: Page):
 
 def test_video_block_links_to_reviews(page: Page):
     """Блок «Видео-обзоры» ведёт на страницу обзоров."""
-    block = page.locator(VIDEO_BLOCK).first
-    if not block.count():
+    block = _find_on_page(page, VIDEO_BLOCK)
+    if block is None:
         pytest.skip("Блока видео-обзоров нет на главной")
 
     # «Все видео-обзоры» в блоке две: десктопная в шапке блока и мобильная

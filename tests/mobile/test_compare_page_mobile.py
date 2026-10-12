@@ -166,11 +166,14 @@ def test_show_diff_keeps_only_differing_rows(two_same_category: Page):
     _switch_to_diff(page)
     page.locator(MODAL_DONE).tap()
 
-    has_identical_row = page.evaluate(
+    # null от JS раньше означал и «нет одинаковых строк», и «нет таблицы» —
+    # тест проходил, не сверив ни одной строки. Считаем сверенные отдельно.
+    scan = page.evaluate(
         """() => {
             const grid = document.querySelector('.compare__table-grid');
-            if (!grid) return null;
+            if (!grid) return { grid: false, compared: 0, identical: null };
             const kids = Array.from(grid.children);
+            let compared = 0;
             for (let i = 0; i < kids.length; i++) {
                 if (!kids[i].classList.contains('compare__char-head')) continue;
                 const values = [];
@@ -179,13 +182,19 @@ def test_show_diff_keeps_only_differing_rows(two_same_category: Page):
                     values.push((kids[j].textContent || '').trim());
                 }
                 const filled = values.filter(t => t.length > 0);
+                if (filled.length >= 2) compared++;
                 if (filled.length >= 2 && new Set(filled).size === 1) {
-                    return { row: kids[i].textContent.trim().slice(0, 60), values: filled };
+                    return { grid: true, compared,
+                             identical: { row: kids[i].textContent.trim().slice(0, 60),
+                                          values: filled } };
                 }
             }
-            return null;
+            return { grid: true, compared, identical: null };
         }"""
     )
+    assert scan["grid"], "Таблица сравнения .compare__table-grid не найдена"
+    assert scan["compared"] > 0, "В режиме «Различия» не сверено ни одной строки"
+    has_identical_row = scan["identical"]
     assert has_identical_row is None, (
         f"В режиме «Различия» обнаружена строка с одинаковыми значениями: {has_identical_row}"
     )

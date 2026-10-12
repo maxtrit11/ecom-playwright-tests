@@ -191,6 +191,17 @@ def _tracker_requests(page: Page, action) -> list[str]:
     return sorted({h.split("?")[0] for h in hits})
 
 
+def _expect_banner_stays_hidden(page: Page) -> None:
+    """Баннер на месте, но скрыт.
+
+    Голый `to_be_hidden` сразу после reload/goto истинен и до монтирования
+    баннера, и при переименованном классе. После выбора баннер остаётся в DOM
+    со `display: none` (см. шапку) — поэтому сначала ждём его в DOM.
+    """
+    expect(page.locator(BANNER)).to_be_attached(timeout=10_000)
+    expect(page.locator(BANNER)).to_be_hidden(timeout=10_000)
+
+
 def _reload(page: Page) -> None:
     page.reload(wait_until="domcontentloaded", timeout=60_000)
 
@@ -233,9 +244,9 @@ def test_accept_all_saves_consent_and_hides_banner(fresh_visit: Page):
     _assert_consent(page, _all(True))
 
     _reload(page)
-    expect(page.locator(BANNER)).to_be_hidden(timeout=10_000)
+    _expect_banner_stays_hidden(page)
     page.goto(OTHER_URL, wait_until="domcontentloaded", timeout=60_000)
-    expect(page.locator(BANNER)).to_be_hidden(timeout=10_000)
+    _expect_banner_stays_hidden(page)
 
 
 def test_accept_all_enables_trackers(fresh_visit: Page):
@@ -261,7 +272,7 @@ def test_reject_all_saves_only_necessary_and_blocks_trackers(fresh_visit: Page):
 
     hits = _tracker_requests(page, lambda: _reload(page))
 
-    expect(page.locator(BANNER)).to_be_hidden(timeout=10_000)
+    _expect_banner_stays_hidden(page)
     assert not hits, f"После «Отклонить все» трекеры всё равно загружены: {hits}"
 
 
@@ -311,7 +322,7 @@ def test_save_custom_settings_persists(fresh_visit: Page):
     _assert_consent(page, expected)
 
     _reload(page)
-    expect(page.locator(BANNER)).to_be_hidden(timeout=10_000)
+    _expect_banner_stays_hidden(page)
     page.locator(FOOTER_SETTINGS_BTN).first.click()
     expect(page.locator(SETTINGS_DIALOG)).to_be_visible(timeout=10_000)
 

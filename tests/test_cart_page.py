@@ -39,7 +39,7 @@ import pytest
 from playwright.sync_api import Locator, Page, expect
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-from conftest import CART_VIEW_JS, CART_VIEW_PAGE
+from conftest import CART_VIEW_JS, CART_VIEW_PAGE, wait_until
 
 CART_URL = "/ru/cart"
 
@@ -164,7 +164,15 @@ def cart_with_product(page: Page, in_stock_product: str) -> Page:
         add = page.locator(BTN_ADD_CART).first
         expect(add).to_be_visible(timeout=20_000)
         add.click()
-        page.wait_for_timeout(1500)
+        # Признак добавления — сумма на кнопке корзины в шапке (у пустой там
+        # «Корзина»). Не дождались — не страшно: ниже результат всё равно
+        # проверяется по самой корзине, и цикл повторит добавление.
+        try:
+            expect(page.locator(HEADER_CART_BTN).first).to_contain_text(
+                "MDL", timeout=5_000
+            )
+        except AssertionError:
+            pass
 
         page.goto(CART_URL, wait_until="domcontentloaded", timeout=60_000)
         if _appears(page.locator(ROW), timeout=15_000):
@@ -177,7 +185,7 @@ def cart_with_product(page: Page, in_stock_product: str) -> Page:
     try:
         if page.locator(BTN_CLEAR).count():
             page.locator(BTN_CLEAR).first.click()
-            page.wait_for_timeout(1500)
+            expect(page.locator(ROW)).to_have_count(0, timeout=10_000)
     except Exception:
         pass
 
@@ -267,9 +275,12 @@ def test_increase_quantity_raises_total(cart_with_product: Page):
     assert before, "Не нашли «Общая сумма» в итогах"
 
     page.locator(BTN_PLUS).first.click()
-    page.wait_for_timeout(2500)
-
-    after = _footer_amount(page, "Общая сумма")
+    # Ждём пересчёта итога по факту, а не 2.5 с
+    after = wait_until(
+        page,
+        lambda: _footer_amount(page, "Общая сумма"),
+        lambda value: value != before,
+    )
     assert after and after > before, (
         f"После нажатия «+» общая сумма не выросла: было {before / 100:.2f}, "
         f"стало {(after or 0) / 100:.2f} MDL"
@@ -282,15 +293,22 @@ def test_decrease_quantity_lowers_total(cart_with_product: Page):
     base = _footer_amount(page, "Общая сумма")
 
     page.locator(BTN_PLUS).first.click()
-    page.wait_for_timeout(2500)
-    raised = _footer_amount(page, "Общая сумма")
+    raised = wait_until(
+        page,
+        lambda: _footer_amount(page, "Общая сумма"),
+        lambda value: value != base,
+    )
     assert raised and raised > base, "Подготовка не удалась: «+» не увеличил сумму"
 
     page.locator(BTN_MINUS).first.click()
-    page.wait_for_timeout(2500)
+    lowered = wait_until(
+        page,
+        lambda: _footer_amount(page, "Общая сумма"),
+        lambda value: value != raised,
+    )
 
-    assert _footer_amount(page, "Общая сумма") == base, (
-        "После «−» общая сумма не вернулась к исходной"
+    assert lowered == base, (
+        f"После «−» общая сумма не вернулась к исходной: было {base}, стало {lowered}"
     )
 
 
@@ -364,19 +382,19 @@ def test_payment_method_tabs_switch(cart_with_product: Page):
     """
     page = cart_with_product
     tabs = page.locator(ALL_TABS).filter(has_text=RE_PAYMENT)
-    if tabs.count() < 2:
+    # Форма дорисовывается после строк корзины: мгновенный count() давал
+    # ложное «меньше двух способов» и молчаливый skip. Ждём второй таб.
+    if not _appears(tabs.nth(1), timeout=15_000):
         pytest.skip("На форме меньше двух способов оплаты")
 
     other = tabs.nth(1)
     label = (other.inner_text() or "").strip()
     other.click()
-    page.wait_for_timeout(1500)
     expect(other).to_have_class(re.compile(r"selected"), timeout=15_000)
 
     cash = tabs.filter(has_text=re.compile("наличны", re.I)).first
     if cash.count():
         cash.click()
-        page.wait_for_timeout(1500)
         expect(cash).to_have_class(re.compile(r"selected"), timeout=15_000), (
             f"Не удалось вернуться к оплате наличными после выбора «{label}»"
         )
@@ -403,7 +421,9 @@ def test_free_delivery_threshold_zeroes_delivery(cart_with_product: Page):
     """
     page = cart_with_product
     info = page.locator(FREE_DELIVERY)
-    if not info.count():
+    # Ждём, а не считаем мгновенно: блок рисуется вместе с формой, позже строк
+    # корзины, и мгновенный count() уводил тест в ложный skip.
+    if not _appears(info, timeout=15_000):
         pytest.skip("На форме нет блока бесплатной доставки")
 
     amounts = _AMOUNT_RE.findall(info.inner_text())
@@ -431,13 +451,12 @@ def test_delivery_type_tabs_switch(cart_with_product: Page):
     """Тип доставки выбирается табами, выбранный подсвечивается."""
     page = cart_with_product
     tabs = page.locator(DELIVERY_TABS)
-    if tabs.count() < 2:
+    if not _appears(tabs.nth(1), timeout=15_000):
         pytest.skip("На форме меньше двух табов доставки — переключать нечего")
 
     second = tabs.nth(1)
     label = (second.inner_text() or "").strip()
     second.click()
-    page.wait_for_timeout(2000)
 
     expect(second).to_have_class(re.compile(r"active|selected|checked"), timeout=15_000), (
         f"Таб «{label}» не отметился активным после клика"
@@ -490,10 +509,10 @@ def test_place_order_happy_path(cart_with_product: Page):
     cash = page.locator(ALL_TABS).filter(has_text=re.compile("наличны", re.I)).first
     if cash.count() and "selected" not in (cash.get_attribute("class") or ""):
         cash.click()
-        page.wait_for_timeout(1000)
+        expect(cash).to_have_class(re.compile(r"selected"), timeout=10_000)
 
+    # `check()` сам убеждается, что галочка встала — пауза после него лишняя
     page.locator(TERMS_CHECKBOX).first.check(force=True)
-    page.wait_for_timeout(500)
 
     # Перед отправкой убеждаемся, что форма считает себя заполненной. Иначе
     # тест упал бы на «корзина не опустела», хотя настоящая причина — пустое

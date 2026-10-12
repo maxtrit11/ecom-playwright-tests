@@ -15,6 +15,8 @@ import pytest
 from playwright.sync_api import Page, expect
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
+from conftest import CART_VIEW_POPUP, wait_until
+
 
 # Товар используется как эталонный для всех тестов
 PRODUCT_SLUG = "jbl-partybox-on-the-go-2"
@@ -46,6 +48,10 @@ PRICE_OLD = ".price.old__price"
 HEADER_COMPARE_LINK = "a.btn__action.compare__btn"     # «Сравнение N» в шапке
 HEADER_FAVORITE_LINK = "a.btn__action.favorite__link"  # «Избранное N» в шапке
 HEADER_CART_BTN = "button.btn__action.btn__cart"       # «Корзина / 6 999 MDL» в шапке
+
+# Строка товара в открытой корзине: Вид 1 — поп-ап `.modal__cart.show`,
+# Вид 2 — страница /cart (`.plank-card`; `.plank-card-mobile` сюда не попадает).
+CART_ROW = ".modal__cart.show .cart__product, .page-cart .plank-card"
 
 # Галерея фото
 GALLERY_THUMBS = ".slider__thumbs.newType"
@@ -105,6 +111,10 @@ def _header_cart_sum(page: Page) -> int:
     return _bani(text)
 
 
+# Фон и цвет текста кнопки — то, что меняется при наведении.
+_BTN_STYLE_JS = "el => [getComputedStyle(el).backgroundColor, getComputedStyle(el).color]"
+
+
 @pytest.fixture(autouse=True)
 def open_product_page(page: Page):
     """Открыть страницу товара перед каждым тестом."""
@@ -121,21 +131,22 @@ def test_compare_button_hover_changes_style(page: Page):
     btn = page.locator(BTN_COMPARE).first
     expect(btn).to_be_visible()
 
-    bg_before = btn.evaluate("el => getComputedStyle(el).backgroundColor")
-    color_before = btn.evaluate("el => getComputedStyle(el).color")
-
+    style_before = btn.evaluate(_BTN_STYLE_JS)
     btn.hover()
-    page.wait_for_timeout(500)
 
-    bg_after = btn.evaluate("el => getComputedStyle(el).backgroundColor")
-    color_after = btn.evaluate("el => getComputedStyle(el).color")
-
-    changed = bg_before != bg_after or color_before != color_after
-    if not changed:
-        pytest.skip(
-            "На этом сайте hover не меняет стиль кнопки — стиль меняется "
-            "только при добавлении в сравнение (active state)"
-        )
+    # Ждём конца CSS-перехода по факту, а не 500 мс. Раньше при неизменном
+    # стиле тест уходил в skip — то есть покраснеть не мог в принципе. На
+    # стенде hover меняет фон белый → чёрный и цвет текста (замер 12.10.2026),
+    # так что «стиль не изменился» — это поломка, а не особенность сайта.
+    style_after = wait_until(
+        page,
+        lambda: btn.evaluate(_BTN_STYLE_JS),
+        lambda value: value != style_before,
+        timeout_ms=3_000,
+    )
+    assert style_after != style_before, (
+        f"Hover не изменил стиль кнопки: фон/цвет {style_before} → {style_after}"
+    )
 
 
 # ===========================================================================
@@ -146,21 +157,22 @@ def test_favorite_button_hover_changes_style(page: Page):
     btn = page.locator(BTN_FAVORITE).first
     expect(btn).to_be_visible()
 
-    bg_before = btn.evaluate("el => getComputedStyle(el).backgroundColor")
-    color_before = btn.evaluate("el => getComputedStyle(el).color")
-
+    style_before = btn.evaluate(_BTN_STYLE_JS)
     btn.hover()
-    page.wait_for_timeout(500)
 
-    bg_after = btn.evaluate("el => getComputedStyle(el).backgroundColor")
-    color_after = btn.evaluate("el => getComputedStyle(el).color")
-
-    changed = bg_before != bg_after or color_before != color_after
-    if not changed:
-        pytest.skip(
-            "На этом сайте hover не меняет стиль кнопки — стиль меняется "
-            "только при добавлении в избранное (active state)"
-        )
+    # Ждём конца CSS-перехода по факту, а не 500 мс. Раньше при неизменном
+    # стиле тест уходил в skip — то есть покраснеть не мог в принципе. На
+    # стенде hover меняет фон белый → чёрный и цвет текста (замер 12.10.2026),
+    # так что «стиль не изменился» — это поломка, а не особенность сайта.
+    style_after = wait_until(
+        page,
+        lambda: btn.evaluate(_BTN_STYLE_JS),
+        lambda value: value != style_before,
+        timeout_ms=3_000,
+    )
+    assert style_after != style_before, (
+        f"Hover не изменил стиль кнопки: фон/цвет {style_before} → {style_after}"
+    )
 
 
 # ===========================================================================
@@ -173,9 +185,11 @@ def test_add_to_compare_increments_header_counter(page: Page):
     btn = page.locator(BTN_COMPARE).first
 
     btn.click()
-    page.wait_for_timeout(800)
-
-    count_after = _header_compare_count(page)
+    count_after = wait_until(
+        page,
+        lambda: _header_compare_count(page),
+        lambda value: value != count_before,
+    )
     assert count_after == count_before + 1, (
         f"Счётчик сравнения не увеличился: {count_before} → {count_after}"
     )
@@ -196,9 +210,11 @@ def test_add_to_favorites_increments_header_counter(page: Page):
 
     btn = page.locator(BTN_FAVORITE).first
     btn.click()
-    page.wait_for_timeout(800)
-
-    count_after = _header_favorite_count(page)
+    count_after = wait_until(
+        page,
+        lambda: _header_favorite_count(page),
+        lambda value: value != count_before,
+    )
     assert count_after == count_before + 1, (
         f"Счётчик избранного не увеличился: {count_before} → {count_after}"
     )
@@ -287,10 +303,17 @@ def test_open_image_full_size(page: Page):
     # Каждое нажатие закрывает один экземпляр галереи, поэтому жмём, пока в DOM
     # что-то остаётся: иначе при двойном открытии тест уходил бы в ложное падение.
     for _ in range(3):
-        if page.locator(LIGHTBOX).count() == 0:
+        opened = page.locator(LIGHTBOX).count()
+        if opened == 0:
             break
         page.keyboard.press("Escape")
-        page.wait_for_timeout(700)
+        # Ждём, пока закроется этот экземпляр (анимация закрытия), а не 700 мс
+        wait_until(
+            page,
+            lambda: page.locator(LIGHTBOX).count(),
+            lambda value: value < opened,
+            timeout_ms=5_000,
+        )
     expect(page.locator(LIGHTBOX)).to_have_count(0, timeout=10_000)
     expect(page.locator("body")).to_have_css("overflow", "visible", timeout=10_000)
     expect(page.locator(H1)).to_be_visible()
@@ -310,8 +333,12 @@ def test_expand_description(page: Page):
 
     height_before = desc.evaluate("el => el.offsetHeight")
     read_more.first.click()
-    page.wait_for_timeout(500)
-    height_after = desc.evaluate("el => el.offsetHeight")
+    height_after = wait_until(
+        page,
+        lambda: desc.evaluate("el => el.offsetHeight"),
+        lambda value: value > height_before,
+        timeout_ms=5_000,
+    )
 
     assert height_after > height_before, (
         f"Описание не раскрылось: высота {height_before} → {height_after}"
@@ -332,13 +359,26 @@ def test_collapse_description(page: Page):
     if read_more.count() == 0:
         pytest.skip("У товара короткое описание — кнопка «Читать больше» не появилась")
 
+    height_initial = desc.evaluate("el => el.offsetHeight")
     read_more.first.click()
-    page.wait_for_timeout(500)
-    height_expanded = desc.evaluate("el => el.offsetHeight")
+    # Раскрытие здесь — подготовка, а не проверка: ждём его по факту
+    # («Скрыть описание» видна, высота выросла), а не 500 мс.
+    hide_btn = desc.get_by_text(re.compile(r"Скрыть описание", re.IGNORECASE)).first
+    expect(hide_btn).to_be_visible(timeout=5_000)
+    height_expanded = wait_until(
+        page,
+        lambda: desc.evaluate("el => el.offsetHeight"),
+        lambda value: value > height_initial,
+        timeout_ms=5_000,
+    )
 
-    desc.get_by_text(re.compile(r"Скрыть описание", re.IGNORECASE)).first.click()
-    page.wait_for_timeout(500)
-    height_collapsed = desc.evaluate("el => el.offsetHeight")
+    hide_btn.click()
+    height_collapsed = wait_until(
+        page,
+        lambda: desc.evaluate("el => el.offsetHeight"),
+        lambda value: value < height_expanded,
+        timeout_ms=5_000,
+    )
 
     assert height_collapsed < height_expanded, (
         f"Описание не свернулось: {height_expanded} → {height_collapsed}"
@@ -405,9 +445,13 @@ def test_add_to_cart_updates_header_sum(page: Page):
     assert price > 0, f"Не удалось распарсить цену со страницы: {price_text}"
 
     page.locator(BTN_ADD_CART).first.click()
-    page.wait_for_timeout(1000)
-
-    sum_after = _header_cart_sum(page)
+    # Ждём саму сумму, а не «секунду по часам»: под нагрузкой XHR корзины
+    # приходит позже, и фиксированной паузы не хватало.
+    sum_after = wait_until(
+        page,
+        lambda: _header_cart_sum(page),
+        lambda value: value != sum_before,
+    )
     assert sum_after == sum_before + price, (
         f"Сумма в шапке не обновилась корректно: {sum_before} + {price} ≠ {sum_after}"
     )
@@ -418,8 +462,12 @@ def test_add_to_cart_updates_header_sum(page: Page):
 # ===========================================================================
 def test_open_cart_from_header(page: Page):
     """В корзину → клик по иконке корзины в шапке → открывается корзина с товаром."""
+    product_name = page.locator(H1).first.inner_text().strip()
+    sum_before = _header_cart_sum(page)
     page.locator(BTN_ADD_CART).first.click()
-    page.wait_for_timeout(3000)
+    # Ждём, что товар реально доехал до корзины: клик по иконке шапки раньше
+    # этого момента открывает пустую корзину.
+    wait_until(page, lambda: _header_cart_sum(page), lambda value: value != sum_before)
 
     # Кликаем по видимой иконке корзины в шапке (есть скрытый mobile-дубль)
     page.evaluate(
@@ -429,7 +477,6 @@ def test_open_cart_from_header(page: Page):
             visible?.click();
         }"""
     )
-    page.wait_for_timeout(2000)
 
     # Сайт может открыть drawer/popup или перейти на /ru/cart.
     # На стейдже это side-drawer .cart__sidebar (с детьми .cart__products /
@@ -439,6 +486,15 @@ def test_open_cart_from_header(page: Page):
         "[class*='basket'][class*='show'], "
         ".cart__sidebar, .cart__products, .cart__items-container"
     )
+
+    def _cart_opened() -> bool:
+        return "cart" in page.url or (
+            drawer_locator.count() > 0 and drawer_locator.first.is_visible()
+        )
+
+    # Ждём открытия по факту, а не 2 с наугад: под нагрузкой дровер рисуется позже.
+    wait_until(page, _cart_opened, lambda opened: opened)
+
     url_changed = "cart" in page.url
     drawer_visible = drawer_locator.count() > 0 and drawer_locator.first.is_visible()
 
@@ -446,8 +502,12 @@ def test_open_cart_from_header(page: Page):
         f"Корзина не открылась: URL={page.url}, drawer={drawer_visible}"
     )
 
-    # В корзине должен быть товар
-    assert "JBL" in page.locator("body").text_content()
+    # В корзине должен быть ИМЕННО этот товар. Прежнее `"JBL" in body` было
+    # тавтологией: «JBL» есть в h1 самой страницы товара, в меню и в футере —
+    # ассерт проходил и с пустой корзиной.
+    expect(page.locator(CART_ROW).filter(has_text=product_name).first).to_be_visible(
+        timeout=15_000
+    )
 
 
 # ===========================================================================
@@ -488,14 +548,21 @@ def test_remove_from_favorites_decrements_counter(page: Page):
     """Сначала добавить в избранное, затем повторный клик → счётчик уменьшается."""
     btn = page.locator(BTN_FAVORITE).first
 
+    count_before = _header_favorite_count(page)
     btn.click()
-    page.wait_for_timeout(800)
-    count_after_add = _header_favorite_count(page)
+    count_after_add = wait_until(
+        page,
+        lambda: _header_favorite_count(page),
+        lambda value: value > count_before,
+    )
     assert count_after_add >= 1, "Товар не добавился в избранное"
 
     btn.click()
-    page.wait_for_timeout(800)
-    count_after_remove = _header_favorite_count(page)
+    count_after_remove = wait_until(
+        page,
+        lambda: _header_favorite_count(page),
+        lambda value: value < count_after_add,
+    )
     assert count_after_remove == count_after_add - 1, (
         f"Счётчик избранного не уменьшился: {count_after_add} → {count_after_remove}"
     )
@@ -533,8 +600,9 @@ def test_quantity_minus_disabled_at_one(page: Page):
 # ===========================================================================
 # Кейс 315: Добавление в корзину с выбранным количеством
 # ===========================================================================
-def test_add_to_cart_with_quantity(page: Page):
+def test_add_to_cart_with_quantity(page: Page, cart_view: str):
     """qty=3 → В корзину → в шапке сумма = price × 3."""
+    product_name = page.locator(H1).first.inner_text().strip()
     price_text = page.locator(PRICE_NEW).first.text_content().strip()
     price = _bani(price_text)
     assert price > 0
@@ -545,9 +613,11 @@ def test_add_to_cart_with_quantity(page: Page):
     expect(page.locator(INPUT_QTY).first).to_have_value("3")
 
     page.locator(BTN_ADD_CART).first.click()
-    page.wait_for_timeout(3000)
-
-    sum_in_header = _header_cart_sum(page)
+    sum_in_header = wait_until(
+        page,
+        lambda: _header_cart_sum(page),
+        lambda value: value == price * 3,
+    )
     assert sum_in_header == price * 3, (
         f"Сумма в шапке ({sum_in_header}) ≠ price * 3 ({price * 3})"
     )
@@ -561,20 +631,21 @@ def test_add_to_cart_with_quantity(page: Page):
             visible?.click();
         }"""
     )
-    page.wait_for_timeout(2500)
 
-    body_text = page.locator("body").text_content()
-    jbl_occurrences = body_text.count("JBL PartyBox On-the-Go 2")
-    assert jbl_occurrences >= 1, (
-        f"Товар не найден в корзине, найдено: {jbl_occurrences}"
+    # Товар ищем строкой корзины. Прежний подсчёт названия по всему `body`
+    # был тавтологией: название стоит в h1 самой страницы товара.
+    row = page.locator(CART_ROW).filter(has_text=product_name).first
+    expect(row, f"Товар «{product_name}» не найден в корзине").to_be_visible(
+        timeout=15_000
     )
 
-    # В корзине должно быть указано кол-во товара = 3
-    qty_in_cart = page.locator("input.product-counter__input, input[class*='counter']")
-    if qty_in_cart.count() > 0:
-        # На странице корзины может быть несколько counter-input; ищем тот, что = "3"
-        values = qty_in_cart.evaluate_all("els => els.map(e => e.value)")
-        assert "3" in values, f"В корзине не нашлось qty=3, значения: {values}"
+    # В корзине должно быть указано кол-во товара = 3. Прежняя проверка искала
+    # «3» среди ВСЕХ counter-input страницы (да ещё под `if count() > 0`) и
+    # находила счётчик самой карточки товара, который тест только что накрутил.
+    if cart_view == CART_VIEW_POPUP:
+        expect(row.locator("input.item__current--input")).to_have_value("3")
+    else:
+        expect(row.locator(".plank-card__btns")).to_contain_text(re.compile(r"\b3\b"))
 
 
 # ===========================================================================
@@ -588,8 +659,11 @@ def test_product_price_matches_cart_header_sum(page: Page):
 
     sum_before = _header_cart_sum(page)
     page.locator(BTN_ADD_CART).first.click()
-    page.wait_for_timeout(1500)
-    sum_after = _header_cart_sum(page)
+    sum_after = wait_until(
+        page,
+        lambda: _header_cart_sum(page),
+        lambda value: value != sum_before,
+    )
 
     assert sum_after == sum_before + price, (
         f"Сумма в шапке не отражает цену товара: было {sum_before}, "

@@ -22,7 +22,9 @@ from mobile.test_category_filters_mobile import (
     _found_count,
     _open_filters,
     _panel,
+    _option_url_key,
     _wait_after_filter,
+    _wait_filter_in_url,
     _wait_found_count_changed,
 )
 from test_filters_pagination import (
@@ -70,6 +72,14 @@ _WIDEST_GROUP_JS = """
     return best && best.ids.length ? best : null;
 }
 """
+
+
+# Товаров на странице листинга (и на телефоне, и на десктопе)
+PAGE_SIZE = 15
+
+
+def _pages_for(count: int) -> int:
+    return max(1, -(-count // PAGE_SIZE))
 
 
 # ---------------------------------------------------------------------------
@@ -141,13 +151,23 @@ def test_applying_filter_resets_to_first_page(page: Page):
     assert _active_page(page) == 2, "Не удалось перейти на страницу 2"
 
     _open_filters(page)
-    _apply_first_checkbox(page)
+    # Выборку набираем так, чтобы после фильтра страниц осталось больше одной.
+    # Раньше брали первую опцию (15 товаров = ровно одна страница), пагинация
+    # исчезала, и единственный ассерт под `if` не выполнялся НИКОГДА.
+    if not _apply_filter_until_multipage(page):
+        pytest.skip(
+            "Ни одна комбинация чекбоксов одной группы не оставляет больше "
+            "одной страницы — сброс на 1-ю не проверить"
+        )
     assert "page=2" not in page.url, f"После применения фильтра в URL остался page=2: {page.url}"
 
     _close_filters(page)
-    # Фильтр мог сузить выдачу до одной страницы — тогда пагинации нет, и это ОК.
-    if page.locator(PAGINATION).count() > 0 and _last_page_number(page) > 1:
-        assert _active_page(page) == 1, "После фильтра пагинация не сбросилась на 1-ю страницу"
+    expect(page.locator(PAGINATION).first).to_be_visible(timeout=10_000)
+    try:
+        _wait_active_page(page, 1, timeout=10_000)
+    except Exception:
+        pass  # ассерт ниже покажет, какая страница активна
+    assert _active_page(page) == 1, "После фильтра пагинация не сбросилась на 1-ю страницу"
 
 
 # ===========================================================================
@@ -158,9 +178,13 @@ def test_filter_updates_result_count_and_page_structure(page: Page):
     pages_before = _last_page_number(page)
 
     _open_filters(page)
+    # `_apply_first_checkbox` сам доказывает применение: ключ в URL, чекбокс
+    # отмечен, счётчик равен бейджу опции.
     _, count_before, count_after = _apply_first_checkbox(page)
     _close_filters(page)
-    pages_after = _last_page_number(page) if page.locator(PAGINATION).count() else 1
+    # Пагинация перерисовывается вслед за счётчиком — ждём число страниц под
+    # новую выдачу, а не читаем мгновенно (прежнее чтение давало x <= x).
+    pages_after = _wait_last_page(page, _pages_for(count_after), timeout=10_000)
 
     assert count_after <= count_before, (
         f"После фильтра число результатов выросло: {count_before} → {count_after}"
@@ -199,10 +223,17 @@ def test_removing_filter_restores_pagination(page: Page):
     pages_before = _last_page_number(page)
 
     _open_filters(page)
-    option_id, _, _ = _apply_first_checkbox(page)
+    option_id, _, count_filtered = _apply_first_checkbox(page)
+    # Фильтр должен реально уменьшить число страниц — иначе «восстановилось»
+    # истинно вхолостую (страниц и не убавлялось).
+    filtered_pages = _wait_last_page(page, _pages_for(count_filtered), timeout=10_000)
+    if filtered_pages >= pages_before:
+        pytest.skip("Первая опция не уменьшает число страниц — восстановление не проверить")
 
     page.locator(f'{FILTERS_MODAL} label[for="{option_id}"]').tap()
-    page.wait_for_function("() => !location.search.match(/filters=\\d/)", timeout=10_000)
+    # Ждём исчезновения именно этого ключа: шаблон `filters=\d` не ловил ключи
+    # вида `fb_dm:1` и выполнялся ещё до снятия фильтра.
+    _wait_filter_in_url(page, _option_url_key(option_id), present=False)
     _wait_after_filter(page)
     _close_filters(page)
 

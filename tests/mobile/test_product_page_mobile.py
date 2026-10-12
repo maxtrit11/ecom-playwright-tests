@@ -31,6 +31,7 @@ import pytest
 from playwright.sync_api import Page, expect
 
 import test_product_page
+from conftest import wait_until
 from mobile.test_homepage_mobile import _swipe_left, _swipe_right
 from test_product_page import (  # noqa: F401 — тесты собирает pytest
     BTN_ADD_CART,
@@ -198,10 +199,17 @@ def test_open_image_full_size(page: Page):
 
     # Escape на телефоне нет — закрываем крестиком (по одному на экземпляр галереи)
     for _ in range(3):
-        if page.locator(LIGHTBOX).count() == 0:
+        opened = page.locator(LIGHTBOX).count()
+        if opened == 0:
             break
         page.locator(f"{LIGHTBOX} {LIGHTBOX_CLOSE}").last.tap()
-        page.wait_for_timeout(700)
+        # Ждём, пока закроется этот экземпляр (анимация закрытия), а не 700 мс
+        wait_until(
+            page,
+            lambda: page.locator(LIGHTBOX).count(),
+            lambda value: value < opened,
+            timeout_ms=5_000,
+        )
     expect(page.locator(LIGHTBOX)).to_have_count(0, timeout=10_000)
     expect(page.locator("body")).to_have_css("overflow", "visible", timeout=10_000)
     expect(page.locator(H1)).to_be_visible()

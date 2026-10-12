@@ -44,7 +44,8 @@ import time
 import pytest
 from playwright.sync_api import Page, expect
 
-from conftest import CART_VIEW_POPUP
+from conftest import CART_VIEW_POPUP, wait_until
+from test_cart_block import _click_add_to_cart, _click_until
 
 
 @pytest.fixture(autouse=True)
@@ -190,8 +191,9 @@ def _add_product(page: Page, product_url: str):
     page.goto(product_url, wait_until="domcontentloaded", timeout=60_000)
     expect(page.locator("h1")).to_be_visible(timeout=15_000)
     _hide_b24_widget(page)
-    page.locator(BTN_ADD_TO_CART).first.click()
-    page.wait_for_timeout(800)
+    # Ждём смены надписи корзины в шапке («Корзина» → сумма), а не 800 мс:
+    # пауза не ловила потерянный клик, и форма открывалась с пустой корзиной.
+    _click_add_to_cart(page)
 
 
 def _open_checkout(page: Page, product_url: str):
@@ -207,10 +209,16 @@ def _open_checkout(page: Page, product_url: str):
     # Очистить остаток из прошлой сессии и положить ровно один товар.
     _open_cart_drawer(page)
     if page.locator(CART_PRODUCT).count() > 0:
-        page.locator(BTN_CLEAR_ALL).first.click()
-        page.wait_for_timeout(700)
-        page.locator(BTN_CART_CLOSE).click()
-        page.wait_for_timeout(400)
+        _click_until(
+            page,
+            page.locator(BTN_CLEAR_ALL).first,
+            lambda: page.locator(CART_PRODUCT).count() == 0,
+        )
+        _click_until(
+            page,
+            page.locator(BTN_CART_CLOSE),
+            lambda: page.locator(CART_MODAL_SHOWN).count() == 0,
+        )
 
     _add_product(page, product_url)
     _open_cart_drawer(page)
@@ -311,13 +319,13 @@ def _setup_chisinau_address(page: Page) -> bool:
     _require_option(page, "delivery", "Доставка по адресу")
     if not page.locator(RADIO_DELIVERY_ADDRESS).is_checked():
         _click_radio_by_id(page, "delivery")
-        page.wait_for_timeout(400)
+        expect(page.locator(RADIO_DELIVERY_ADDRESS)).to_be_checked(timeout=5_000)
 
     # Тип доставки = Кишинёв (radio сам проставляет регион «мун. Кишинёв»)
     if page.locator(f'{CHECKOUT_FORM} label[for="delivery-chisinau"]').count() == 0:
         return False
     _click_radio_by_id(page, "delivery-chisinau")
-    page.wait_for_timeout(800)
+    expect(page.locator(RADIO_DELIVERY_CHISINAU)).to_be_checked(timeout=5_000)
 
     # Выбрать сектор в активном пустом v-select. У части товаров сектор/город
     # уже предустановлен (активного пустого v-select нет, idx == -1) — тогда
@@ -337,16 +345,20 @@ def _setup_chisinau_address(page: Page) -> bool:
     # в пустоту (та же гонка, что и с поп-апом корзины).
     for _ in range(2):
         sector.locator(".vs__search").click()
-        page.wait_for_timeout(800)
         items = page.locator(DROPDOWN_MENU)
         try:
             expect(items.first).to_be_visible(timeout=5_000)
         except AssertionError:
             continue
         items.first.click()
-        page.wait_for_timeout(400)
-        if (sector.locator(".vs__selected").inner_text() or "").strip():
+        # Ждём, что значение реально проставилось, а не 400 мс наугад.
+        try:
+            expect(sector.locator(".vs__selected")).to_have_text(
+                re.compile(r"\S"), timeout=5_000
+            )
             return True
+        except AssertionError:
+            continue
 
     # Молча возвращать True нельзя: сабмит без сектора не уходит ВООБЩЕ, и
     # тест падал бы позже с невнятным «модалка не закрылась» вместо причины
@@ -364,7 +376,6 @@ def test_close_checkout_via_x(checkout: Page):
     page = checkout
 
     page.locator(BTN_CHECKOUT_X).click()
-    page.wait_for_timeout(500)
 
     expect(page.locator(CART_MODAL_SHOWN)).to_have_count(0, timeout=5_000)
     expect(page.locator("h1")).to_be_visible()
@@ -379,7 +390,6 @@ def test_close_checkout_by_clicking_outside(checkout: Page):
     # `.modal__checkout` — это overlay на полный экран поверх `.modal__cart.show`.
     # Кликаем в левый верхний угол, мимо правого сайдбара формы.
     page.locator(CHECKOUT_OVERLAY).click(position={"x": 50, "y": 50})
-    page.wait_for_timeout(500)
 
     expect(page.locator(CART_MODAL_SHOWN)).to_have_count(0, timeout=5_000)
 
@@ -395,14 +405,12 @@ def test_dont_call_me_reveals_messenger_field(checkout: Page):
 
     # Сам input#dontCallMe визуально скрыт — кликаем по связанному label
     page.locator(CHK_DONT_CALL_LABEL).first.click()
-    page.wait_for_timeout(300)
 
     # Появилось поле под чекбоксом
     expect(page.locator(INPUT_MESSENGER)).to_be_visible(timeout=3_000)
 
     # А выключить — поле снова исчезло
     page.locator(CHK_DONT_CALL_LABEL).first.click()
-    page.wait_for_timeout(300)
     expect(page.locator(INPUT_MESSENGER)).to_have_count(0)
 
 
@@ -443,9 +451,10 @@ def test_select_payment_method(checkout: Page, qase_id: int, selector: str, labe
     chosen_id = selector.split("#")[-1]
     _require_option(page, chosen_id, label)
     _click_radio_by_id(page, chosen_id)
-    page.wait_for_timeout(400)
 
-    assert page.locator(selector).is_checked(), f"Радио {label} (#{qase_id}) не выбралось"
+    expect(
+        page.locator(selector), f"Радио {label} (#{qase_id}) не выбралось"
+    ).to_be_checked(timeout=5_000)
 
     # Остальные radio в группе оплаты (одно имя `radio-payment`) — не выбраны
     other_ids = ["cash", "maib", "credit", "recount"]
@@ -475,9 +484,10 @@ def test_select_delivery_method(checkout: Page, qase_id: int, selector: str, lab
     chosen_id = selector.split("#")[-1]
     _require_option(page, chosen_id, label)
     _click_radio_by_id(page, chosen_id)
-    page.wait_for_timeout(400)
 
-    assert page.locator(selector).is_checked(), f"Радио «{label}» (#{qase_id}) не выбралось"
+    expect(
+        page.locator(selector), f"Радио «{label}» (#{qase_id}) не выбралось"
+    ).to_be_checked(timeout=5_000)
 
     # Альтернативный radio в этой же группе name=radio-delivery должен сняться
     alt = RADIO_DELIVERY_PICKUP if chosen_id == "delivery" else RADIO_DELIVERY_ADDRESS
@@ -503,9 +513,10 @@ def test_select_delivery_type(checkout: Page, qase_id: int, selector: str, label
     chosen_id = selector.split("#")[-1]
     _require_option(page, chosen_id, label)
     _click_radio_by_id(page, chosen_id)
-    page.wait_for_timeout(400)
 
-    assert page.locator(selector).is_checked(), f"Радио «{label}» (#{qase_id}) не выбралось"
+    expect(
+        page.locator(selector), f"Радио «{label}» (#{qase_id}) не выбралось"
+    ).to_be_checked(timeout=5_000)
     # NB: `delivery-chisinau` и `delivery-region` — разные radio-группы (разные name),
     #     поэтому взаимной зависимости тут НЕТ — каждое чек-радио тогглится независимо.
 
@@ -520,7 +531,7 @@ def test_region_and_city_dropdowns_open_with_items(checkout: Page):
     _require_option(page, "delivery", "Доставка по адресу")
     if not page.locator(RADIO_DELIVERY_ADDRESS).is_checked():
         _click_radio_by_id(page, "delivery")
-        page.wait_for_timeout(400)
+        expect(page.locator(RADIO_DELIVERY_ADDRESS)).to_be_checked(timeout=5_000)
 
     # «Кишинёв» — это radio типа доставки, а не пункт списка региона. До его
     # выбора v-select'ы региона/сектора задизейблены. Если у товара такого типа
@@ -528,7 +539,7 @@ def test_region_and_city_dropdowns_open_with_items(checkout: Page):
     if page.locator(f'{CHECKOUT_FORM} label[for="delivery-chisinau"]').count() == 0:
         pytest.skip("Тип доставки «Кишинёв» недоступен для этого товара")
     _click_radio_by_id(page, "delivery-chisinau")
-    page.wait_for_timeout(800)
+    expect(page.locator(RADIO_DELIVERY_CHISINAU)).to_be_checked(timeout=5_000)
 
     # Регион проставился сам → первый v-select показывает «мун. Кишинёв»
     expect(page.locator(VSELECT_SELECTED).first).to_have_text(
@@ -542,8 +553,11 @@ def test_region_and_city_dropdowns_open_with_items(checkout: Page):
     idx = _wait_sector_vselect(page, timeout=15_000)
     if idx < 0:
         pytest.skip("Сектор/населённый пункт предустановлен — выпадающего списка нет")
-    page.locator(VSELECT_SEARCH).nth(idx).click()
-    page.wait_for_timeout(800)
+    # Индекс посчитан среди `.v-select` — и применяем его к ним же, как в
+    # `_setup_chisinau_address`. Прежний `VSELECT_SEARCH.nth(idx)` брал индекс
+    # из другого набора узлов и мог открыть соседний список (регион), и тест
+    # зеленел, не открыв сектор вовсе.
+    page.locator(VSELECT).nth(idx).locator(".vs__search").click()
     sector_items = page.locator(DROPDOWN_MENU)
     expect(sector_items.first).to_be_visible(timeout=5_000)
     assert sector_items.count() > 0, "Список секторов/населенных пунктов пустой"
@@ -567,12 +581,14 @@ def _skip_if_out_of_stock(page: Page):
 
 def _click_place_order(page: Page):
     """Нажать «Оформить заказ». При невалидной форме сабмит не уходит —
-    модалка остаётся открытой и подсвечивает обязательные поля."""
+    модалка остаётся открытой и подсвечивает обязательные поля.
+
+    Паузы после клика нет: результат (подсветка полей) каждый тест ждёт сам
+    через `expect`, а не 800 мс по часам."""
     _skip_if_out_of_stock(page)
     btn = page.locator(BTN_PLACE_ORDER).first
     btn.scroll_into_view_if_needed()
     btn.click()
-    page.wait_for_timeout(800)
 
 
 def _money_to_bani(text: str):
@@ -635,11 +651,32 @@ def _checkout_summary(page: Page) -> dict:
     return out
 
 
+def _settled_summary(page: Page) -> dict:
+    """Сводка после пересчёта: строка «Доставка» есть и два чтения подряд
+    (~200 мс) совпали.
+
+    Пересчёт идёт на клиенте после смены типа доставки; раньше здесь стояла
+    пауза 800 мс. Ждём именно покоя, а не «пока итог сойдётся»: ожидание
+    правильного итога — это ассерт, вывернутый в ожидание, оно замаскировало
+    бы кратковременно неверную сводку. Не дождались — ассерты теста покажут
+    последние прочитанные цифры.
+    """
+    previous = [None]
+
+    def settled(value: dict) -> bool:
+        same = value == previous[0]
+        previous[0] = value
+        return same and value["delivery"] is not None
+
+    return wait_until(
+        page, lambda: _checkout_summary(page), settled, timeout_ms=5_000, poll_ms=200
+    )
+
+
 def _select_delivery_type(page: Page, radio_id: str) -> None:
     """Выбрать тип доставки и дождаться, что радио реально переключилось."""
     _click_radio_by_id(page, radio_id)
     expect(page.locator(f"{CHECKOUT_FORM} input#{radio_id}")).to_be_checked(timeout=5_000)
-    page.wait_for_timeout(800)  # пересчёт сводки на клиенте
 
 
 # ===========================================================================
@@ -654,12 +691,14 @@ def test_required_fields_errors_on_empty_submit(checkout: Page):
 
     _click_place_order(page)
 
-    # Форма не закрылась (сабмит заблокирован валидацией)
-    expect(page.locator(CHECKOUT_FORM)).to_be_visible()
-
     # Обёртка телефона и блок согласия подсвечены ошибкой (стабильные сигналы)
     expect(page.locator(ERR_PHONE)).to_have_count(1, timeout=5_000)
     expect(page.locator(ERR_TERMS)).to_have_count(1)
+
+    # Форма не закрылась (сабмит заблокирован валидацией). Проверяем ПОСЛЕ
+    # подсветки: сразу за кликом форма видна в любом случае — сабмит ещё не
+    # обработан, и проверка прошла бы вхолостую.
+    expect(page.locator(CHECKOUT_FORM)).to_be_visible()
 
     # Под обязательными полями виден текст «Это обязательное поле»
     # (v-select Населенный пункт грузится асинхронно — даём expect авто-ретраить)
@@ -673,13 +712,20 @@ def test_required_fields_errors_on_empty_submit(checkout: Page):
 def test_transfer_payment_reveals_required_legal_fields(checkout: Page):
     page = checkout
 
-    # Число видимых ошибок обязательных полей до выбора перечисления
+    # Число видимых ошибок обязательных полей до выбора перечисления.
+    # Считаем только после того, как валидация отработала (подсветка телефона
+    # и текст «Это обязательное поле»): мгновенный count() сразу за кликом
+    # даёт заниженное «до», и рост «после» засчитывался бы вхолостую.
     _click_place_order(page)
+    expect(page.locator(ERR_PHONE)).to_have_count(1, timeout=5_000)
+    expect(
+        page.locator(VIS_VALIDATION).filter(has_text=REQUIRED_MSG).first
+    ).to_be_visible(timeout=10_000)
     errors_before = page.locator(VIS_VALIDATION).count()
 
     # Выбираем «По перечислению»
     _click_radio_by_id(page, "recount")
-    page.wait_for_timeout(500)
+    expect(page.locator(RADIO_PAY_TRANSFER)).to_be_checked(timeout=5_000)
 
     # Появились поля юрлица
     for label in ["Название фирмы", "Фискальный код", "Юридический адрес", "IBAN"]:
@@ -689,7 +735,12 @@ def test_transfer_payment_reveals_required_legal_fields(checkout: Page):
 
     # Повторный сабмит — обязательных ошибок стало больше (добавились поля юрлица)
     _click_place_order(page)
-    errors_after = page.locator(VIS_VALIDATION).count()
+    errors_after = wait_until(
+        page,
+        lambda: page.locator(VIS_VALIDATION).count(),
+        lambda value: value > errors_before,
+        timeout_ms=5_000,
+    )
     assert errors_after > errors_before, (
         f"После «По перечислению» число обязательных ошибок не выросло: "
         f"{errors_before} → {errors_after}"
@@ -709,13 +760,16 @@ def test_dont_call_makes_phone_optional(checkout: Page):
 
     # Включаем «Не перезванивать» (клик по label — сам input скрыт)
     page.locator(CHK_DONT_CALL_LABEL).first.click()
-    page.wait_for_timeout(400)
 
     # Появилось поле мессенджера
     expect(page.locator(INPUT_MESSENGER)).to_be_visible(timeout=3_000)
 
-    # Повторный сабмит: телефон больше НЕ обязательный — класс error снят
+    # Повторный сабмит: телефон больше НЕ обязательный — класс error снят.
+    # Пауза здесь намеренная: проверяем, что ошибка НЕ вернётся после
+    # сабмита. `to_have_count(0)` прошёл бы сразу, ещё до того как сабмит
+    # отработал, — отдельного сигнала «валидация завершилась» у формы нет.
     _click_place_order(page)
+    page.wait_for_timeout(800)
     expect(page.locator(ERR_PHONE)).to_have_count(0, timeout=5_000)
 
 
@@ -739,11 +793,11 @@ def test_delivery_cost_updates_in_summary(checkout: Page):
     # Доставка по адресу выбрана по умолчанию — подстрахуемся
     if not page.locator(RADIO_DELIVERY_ADDRESS).is_checked():
         _click_radio_by_id(page, "delivery")
-        page.wait_for_timeout(500)
+        expect(page.locator(RADIO_DELIVERY_ADDRESS)).to_be_checked(timeout=5_000)
 
     for radio_id, human in (("delivery-chisinau", "Кишинёв"), ("delivery-region", "Молдова")):
         _select_delivery_type(page, radio_id)
-        s = _checkout_summary(page)
+        s = _settled_summary(page)
 
         assert s["delivery"] is not None, (
             f"При доставке по адресу ({human}) в сводке нет строки «Доставка»"
@@ -837,11 +891,10 @@ def test_place_order_happy_path(checkout: Page):
     # 8. Оплата — Наличными (обычно уже выбрана по умолчанию)
     if not page.locator(RADIO_PAY_CASH).is_checked():
         _click_radio_by_id(page, "cash")
-        page.wait_for_timeout(300)
+        expect(page.locator(RADIO_PAY_CASH)).to_be_checked(timeout=5_000)
 
-    # 9. Согласие с условиями
+    # 9. Согласие с условиями (`check()` сам убеждается, что галочка стоит)
     page.locator(CHK_TERMS).check()
-    page.wait_for_timeout(200)
 
     # 10. Сабмит. Заодно слушаем сам запрос создания заказа: без этого
     #     «подтверждения нет» неразличимо в трёх разных случаях — форма не

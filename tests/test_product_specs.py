@@ -294,6 +294,11 @@ def test_specs_hidden_for_product_without_specs(page: Page, no_specs_product: st
     """У товара без характеристик блока нет — ни таблицы, ни пустого заголовка."""
     _open(page, no_specs_product)
 
+    # Проверка отсутствия сразу после загрузки прошла бы и до отрисовки блока.
+    # Ждём соседний блок, который рисуется тем же проходом (кнопка корзины/
+    # предзаказа в карточке), и сверяем, что у товара и в данных пусто.
+    expect(page.locator("button.btn__add_cart").first).to_be_visible(timeout=20_000)
+    assert _row_count(_data(page)) == 0, "У товара в данных есть характеристики"
     expect(page.locator(SECTION)).to_have_count(0)
     expect(page.get_by_role("heading", name="Характеристики")).to_have_count(0)
 
@@ -350,6 +355,10 @@ def test_specs_follow_selected_color(specs_page: Page, color_with_other_specs):
     target, differs = color_with_other_specs
     if not target:
         pytest.skip("У товара нет других цветов")
+    if not differs:
+        # Одинаковые характеристики — не перестроившийся блок прошёл бы
+        # проверку, то есть тест упасть не мог. Честнее пропустить.
+        pytest.skip("Нет цвета с отличающимися характеристиками — смену блока не проверить")
 
     page.locator(f'{SWATCH}[href$="/{target}"]').first.click()
     page.wait_for_function(
@@ -366,8 +375,7 @@ def test_specs_follow_selected_color(specs_page: Page, color_with_other_specs):
     assert got == want, (
         f"После выбора цвета {target} на странице {got}, а у товара {want}"
     )
-    if differs:
-        assert got != _expected_rows(start), "Блок характеристик не перестроился после выбора цвета"
+    assert got != _expected_rows(start), "Блок характеристик не перестроился после выбора цвета"
 
 
 def test_specs_in_romanian(specs_page: Page, specs_product: str):

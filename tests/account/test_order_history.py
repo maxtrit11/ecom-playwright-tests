@@ -222,6 +222,22 @@ def _orders(page: Page) -> list[dict]:
     return orders
 
 
+def _expect_orders_reload(page: Page):
+    """Контекст: дождаться ответа на перезапрос списка заказов.
+
+    Любой фильтр таблицы (статус, дата, избранные) перезапрашивает список
+    GET-запросом к `/order/`. Ждём именно ответ, а не фиксированную паузу:
+    на stage он идёт от 1 до 6+ с. POST переключения избранного сюда не
+    попадает.
+    """
+    return page.expect_response(
+        lambda r: "/order/" in r.url
+        and r.request.method == "GET"
+        and TOGGLE_FAV_URL not in r.url,
+        timeout=20_000,
+    )
+
+
 def _order_date(value: str):
     """Дата строки таблицы (`17.08.26`) как `date`."""
     return datetime.strptime(value.strip(), "%d.%m.%y").date()
@@ -269,7 +285,8 @@ def _status_options(page: Page) -> list[str]:
     """Значения фильтра «Статус заказа», не меняя выбранного (дропдаун закрываем)."""
     names = _open_status_dropdown(page)
     page.keyboard.press("Escape")
-    page.wait_for_timeout(300)
+    # Дропдаун закрылся — по факту, а не через 300 мс
+    expect(page.locator(DROPDOWN_OPTION)).to_have_count(0, timeout=5_000)
     return names
 
 
@@ -298,8 +315,11 @@ def _apply_status(page: Page, wanted: str | None = None) -> str:
     option = page.locator(DROPDOWN_OPTION).filter(has_text=re.compile(
         rf"^\s*{re.escape(target)}\s*$"
     )).first
-    option.click()
-    page.wait_for_timeout(2500)
+    # Таблица перезапрашивается с сервера — ждём сам ответ и покой таблицы,
+    # а не 2.5 с по часам.
+    with _expect_orders_reload(page):
+        option.click()
+    _wait_table_settled(page)
     return target
 
 
@@ -345,9 +365,9 @@ def test_order_history_page_displayed(page: Page):
     assert "Дата" in header_text
     assert "Статус" in header_text
 
-    # Список заказов
-    rows = page.locator(ORDER_ROW)
-    assert rows.count() > 0
+    # Список заказов (строки догружаются после каркаса таблицы — ждём, а не
+    # считаем мгновенно)
+    expect(page.locator(ORDER_ROW).first).to_be_visible(timeout=15_000)
 
 
 # ===========================================================================
@@ -366,9 +386,15 @@ def test_search_order_by_product_name(page: Page):
         pytest.skip("У учётки нет заказов — искать нечего")
     target = orders[0]["number"].lstrip("#")
 
-    search.fill(target)
-    search.press("Enter")
-    page.wait_for_timeout(2500)
+    # Ждём ответ самого поиска, а не 2.5 с (тот же приём, что в
+    # test_combined_filters), и затем — пока таблица перестанет перерисовываться.
+    with page.expect_response(
+        lambda r: "/order/" in r.url and f"search={target}" in r.url,
+        timeout=20_000,
+    ):
+        search.fill(target)
+        search.press("Enter")
+    _wait_table_settled(page)
 
     # Раньше здесь стояло `assert rows_after >= 0` — тавтология, истинная
     # всегда, даже если поиск вообще не работает. Проверяем результат по сути.
@@ -440,18 +466,31 @@ def test_filter_by_order_date(page: Page):
     cells = page.locator(".mx-table-date td.cell:not(.disabled)")
     expect(cells.first).to_be_visible(timeout=10_000)
     assert cells.count() >= 2, "В календаре нет двух доступных дат — диапазон не выбрать"
+    orders_before = _orders(page)
     cells.first.click()
-    cells.last.click()
-    page.wait_for_timeout(2500)
+    with _expect_orders_reload(page):
+        cells.last.click()
+    _wait_table_settled(page)
 
     start, end = _selected_range(page)
+    # Заказы с первой страницы, которые попадают в диапазон, — они обязаны
+    # остаться. Без этого «все строки в диапазоне» истинно и на ПУСТОЙ выдаче:
+    # фильтр, обнуливший таблицу, проходил тест.
+    expected_in_range = [
+        o["number"] for o in orders_before if start <= _order_date(o["date"]) <= end
+    ]
+
+    result = _orders(page)
+
+    missing = [n for n in expected_in_range if n not in {o["number"] for o in result}]
+    assert not missing, (
+        f"Фильтр {start}…{end} убрал заказы, которые в диапазон попадают: {missing[:5]}"
+    )
 
     # Суть кейса: в выдаче остаются ТОЛЬКО заказы из выбранного диапазона.
     # Раньше проверялось лишь «таблица видна», что проходило и при полностью
     # неработающем фильтре.
-    outside = [
-        o for o in _orders(page) if not (start <= _order_date(o["date"]) <= end)
-    ]
+    outside = [o for o in result if not (start <= _order_date(o["date"]) <= end)]
     assert not outside, (
         f"После фильтра {start}…{end} в выдаче остались заказы вне диапазона: "
         + ", ".join(f"{o['number']} от {o['date']}" for o in outside[:5])
@@ -503,15 +542,18 @@ def test_combined_filters(page: Page):
     cells = page.locator(".mx-table-date td.cell:not(.disabled)")
     expect(cells.first).to_be_visible(timeout=10_000)
     cells.first.click()
-    cells.last.click()
-    page.wait_for_timeout(2500)
+    # Ждём ответ списка и покой таблицы, а не 2.5 с
+    with _expect_orders_reload(page):
+        cells.last.click()
+    _wait_table_settled(page)
     start, end = _selected_range(page)
+    sample_in_range = start <= _order_date(sample["date"]) <= end
 
     result = _orders(page)
 
     # Если образец выпал из диапазона календаря — сверять нечего, но и молча
     # проходить нельзя: тогда проверяем только согласованность выдачи.
-    if start <= _order_date(sample["date"]) <= end:
+    if sample_in_range:
         assert any(o["number"] == sample["number"] for o in result), (
             f"Заказ {sample['number']} удовлетворяет всем трём фильтрам "
             f"(номер {number}, статус «{status}», дата {sample['date']} "
@@ -537,14 +579,24 @@ def test_combined_filters(page: Page):
 def test_empty_search_result(page: Page):
     """Ввести несуществующее значение — корректное состояние
     «нет заказов» / пустая таблица без ошибок."""
+    # До поиска заказы в таблице есть — иначе «0 строк» после поиска ничего
+    # не доказывает.
+    expect(page.locator(ORDER_ROW).first).to_be_visible(timeout=15_000)
+
+    # Ждём ответ самого поиска, а не 2 с: мгновенный count() в момент
+    # перерисовки таблицы мог дать 0 и при неработающем поиске.
     search = page.locator(SEARCH_INPUT)
-    search.fill("99999999")
-    search.press("Enter")
-    page.wait_for_timeout(2000)
+    with page.expect_response(
+        lambda r: "/order/" in r.url and "search=99999999" in r.url,
+        timeout=20_000,
+    ):
+        search.fill("99999999")
+        search.press("Enter")
 
     # Заказы не отображаются
-    rows = page.locator(ORDER_ROW)
-    assert rows.count() == 0, "Найдены заказы для несуществующего запроса"
+    expect(
+        page.locator(ORDER_ROW), "Найдены заказы для несуществующего запроса"
+    ).to_have_count(0, timeout=15_000)
 
     # Страница не сломана — таблица или заглушка видна
     expect(page.locator(TABLE)).to_be_visible()
@@ -667,9 +719,11 @@ def select_favorite_filter(page: Page, option: str) -> None:
         has_text=FAV_FILTER_LABEL
     )
     item.locator(".vs__dropdown-toggle").click()
-    page.get_by_role("option", name=option).click()
-    # Список перезапрашивается с сервера — ждём, пока таблица перерисуется
-    page.wait_for_timeout(2_000)
+    # Список перезапрашивается с сервера — ждём сам ответ и затем, пока
+    # таблица перестанет перерисовываться (вместо паузы 2 с).
+    with _expect_orders_reload(page):
+        page.get_by_role("option", name=option).click()
+    _wait_table_settled(page)
 
 
 # ---------------------------------------------------------------------------

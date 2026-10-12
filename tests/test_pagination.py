@@ -209,8 +209,14 @@ def _grid_count(page: Page) -> int:
 
 
 def _require_pagination(page: Page) -> None:
-    """Пропустить тест, если на категории нет пагинации (одна страница)."""
-    if page.locator(PAGINATION).count() == 0:
+    """Пропустить тест, если на категории нет пагинации (одна страница).
+
+    Ждём, а не считаем мгновенно: пагинация дорисовывается после карточек
+    (фикстура ждёт только их), и мгновенный count() давал ложный skip.
+    """
+    try:
+        expect(page.locator(PAGINATION).first).to_be_visible(timeout=10_000)
+    except AssertionError:
         pytest.skip("На этой категории нет пагинации (одна страница)")
 
 
@@ -238,8 +244,10 @@ def open_category(page: Page):
 @pytest.mark.smoke
 def test_pagination_control_renders(page: Page):
     """Блок пагинации виден и содержит хотя бы одну числовую кнопку."""
-    _require_pagination(page)
-    expect(page.locator(PAGINATION)).to_be_visible()
+    # Без `_require_pagination`: этот кейс и есть проверка, что пагинация
+    # отрисована, а skip при её отсутствии делал его неспособным упасть.
+    # Дефолтная категория многостраничная (31 товар по 15 на страницу).
+    expect(page.locator(PAGINATION)).to_be_visible(timeout=10_000)
     assert _number_buttons(page).count() >= 1, (
         "В пагинации нет ни одной числовой кнопки-страницы"
     )

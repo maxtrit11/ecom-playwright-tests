@@ -28,6 +28,7 @@ from playwright.sync_api import Page, expect
 
 from conftest import CART_VIEW_POPUP
 from test_price_consistency import _bani
+from test_sorting import _grid_signature, _wait_grid_changed
 
 # Категория по умолчанию — из ручного кейса. Русская локаль принципиальна:
 # тексты плашки («Товар был добавлен в корзину») проверяются по-русски.
@@ -398,13 +399,18 @@ def test_sorting_keeps_active_filters(page: Page):
         pytest.skip("После фильтра остался один товар — сортировать нечего")
 
     # Открыть список сортировок и выбрать «От самой низкой цены»
+    grid_before = _grid_signature(page)
+    page.evaluate("() => { window.__sortSig = null; }")
     page.locator(SORT_BTN).click()
     expect(page.locator(f"{SORT_LIST}.show")).to_be_visible(timeout=10_000)
     page.locator(SORT_LIST).get_by_text(SORT_LOWEST_PRICE, exact=True).click()
     page.wait_for_function(
         "() => location.search.includes('sort=')", timeout=20_000
     )
-    page.wait_for_timeout(2_000)
+    # Грид перерисовывается позже смены URL: ждём, пока выдача сменится и
+    # устоится (хелпер сортировки), а не 2 с по часам. Если порядок и так был
+    # по возрастанию, хелпер дождётся потолка и вернёт управление.
+    _wait_grid_changed(page, grid_before)
 
     # 1. Фильтры не сбросились
     expect(page.locator(CHIP)).to_have_count(1, timeout=15_000)

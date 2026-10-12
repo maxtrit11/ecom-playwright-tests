@@ -29,6 +29,8 @@ import re
 import pytest
 from playwright.sync_api import Page, expect
 
+from conftest import wait_until
+
 
 COMPARE_URL = "/ru/compare"
 # Два товара одной категории «Портативные Partybox» — для тестов "Различия"
@@ -232,11 +234,16 @@ def test_show_diff_reduces_parameters(two_same_category: Page):
     # Клик по label (input перекрыт span'ом cart__checkbox)
     diff_label = page.locator(f"label:has({INPUT_SHOW_DIFF})").first
     diff_label.click()
-    page.wait_for_timeout(700)
 
     expect(page.locator(INPUT_SHOW_DIFF)).to_be_checked()
 
-    props_diff = page.locator(PROP_ITEM).count()
+    # Ждём перерисовку таблицы по факту (смену числа строк), а не 700 мс
+    props_diff = wait_until(
+        page,
+        lambda: page.locator(PROP_ITEM).count(),
+        lambda value: value != props_all,
+        timeout_ms=10_000,
+    )
     assert props_diff < props_all, (
         f"После «Различия» параметров не стало меньше: было {props_all}, "
         f"стало {props_diff}"
@@ -268,7 +275,8 @@ def test_multiple_category_filters_shown(two_different_categories: Page):
 
     # Категории — это .compare__filters-item с input id вида radio-<число>
     cat_inputs = page.locator(".compare__categories input[type='radio'][id^='radio-']")
-    count = cat_inputs.count()
+    # Фикстура дождалась лишь ПЕРВОГО радио — второе может дорисоваться позже
+    count = wait_until(page, cat_inputs.count, lambda value: value >= 2, timeout_ms=10_000)
     assert count >= 2, (
         f"Ожидалось ≥2 категорий-фильтров (товары разных категорий), "
         f"фактически {count}"
@@ -286,7 +294,15 @@ def test_see_products_button_opens_catalog(empty_compare: Page):
     see_btn = _btn_with_text(page, re.compile(r"Посмотреть.*товар", re.IGNORECASE))
     expect(see_btn).to_be_visible()
     see_btn.click()
-    page.wait_for_timeout(600)
+    # Ждём само открытие меню (класс на #header), а не 600 мс. Не открылось —
+    # не бросаем: ассерты ниже скажут, чего именно не хватает.
+    try:
+        page.wait_for_function(
+            "() => document.querySelector('#header')?.classList.contains('show-catalog')",
+            timeout=10_000,
+        )
+    except Exception:
+        pass
 
     catalog_open = page.evaluate(
         """() => {
@@ -316,7 +332,6 @@ def test_remove_all_compare(two_same_category: Page):
     remove_all = _btn_with_text(page, re.compile(r"Удалить.*все.*товар", re.IGNORECASE))
     expect(remove_all).to_be_visible()
     remove_all.click()
-    page.wait_for_timeout(800)
 
     expect(page.locator(COMPARE_ITEM)).to_have_count(0, timeout=10_000)
     expect(page.locator(EMPTY_STUB)).to_be_visible()
@@ -337,9 +352,13 @@ def test_remove_one_product_from_compare(two_same_category: Page):
     assert items_before >= 2
 
     page.locator(BTN_DELETE_ONE).first.click()
-    page.wait_for_timeout(700)
 
-    items_after = page.locator(COMPARE_ITEM).count()
+    items_after = wait_until(
+        page,
+        lambda: page.locator(COMPARE_ITEM).count(),
+        lambda value: value != items_before,
+        timeout_ms=10_000,
+    )
     assert items_after == items_before - 1, (
         f"Карточек не уменьшилось на 1: {items_before} → {items_after}"
     )
@@ -360,21 +379,32 @@ def test_show_diff_keeps_only_differing_rows(two_same_category: Page):
     действительно убирает идентичные строки."""
     page = two_same_category
 
-    # Переключаемся в Различия
+    # Переключаемся в Различия и ждём перерисовку таблицы (число строк
+    # сменилось), а не 700 мс
+    props_all = page.locator(PROP_ITEM).count()
     page.locator(f"label:has({INPUT_SHOW_DIFF})").first.click()
-    page.wait_for_timeout(700)
     expect(page.locator(INPUT_SHOW_DIFF)).to_be_checked()
+    wait_until(
+        page,
+        lambda: page.locator(PROP_ITEM).count(),
+        lambda value: value != props_all,
+        timeout_ms=10_000,
+    )
 
     # Для каждой видимой строки характеристики ищем значения каждого товара
     # в той же строке и проверяем что они различаются.
     # Таблица — плоский grid: за каждым `.compare__char-head` идут ячейки
     # `.compare__char-cell` (по одной на товар) до следующего заголовка,
     # поэтому строку собираем обходом соседей, а не через общий контейнер.
-    has_identical_row = page.evaluate(
+    # Раньше JS возвращал null и при отсутствии самой таблицы, и при пустой
+    # таблице — тест «не находил одинаковых строк» и проходил, не сравнив ни
+    # одной. Теперь отдельно считаем, сколько строк реально сверили.
+    scan = page.evaluate(
         """() => {
             const grid = document.querySelector('.compare__table-grid');
-            if (!grid) return null;
+            if (!grid) return { grid: false, compared: 0, identical: null };
             const kids = Array.from(grid.children);
+            let compared = 0;
             for (let i = 0; i < kids.length; i++) {
                 if (!kids[i].classList.contains('compare__char-head')) continue;
                 const values = [];
@@ -383,13 +413,22 @@ def test_show_diff_keeps_only_differing_rows(two_same_category: Page):
                     values.push((kids[j].textContent || '').trim());
                 }
                 const filled = values.filter(t => t.length > 0);
+                if (filled.length >= 2) compared++;
                 if (filled.length >= 2 && new Set(filled).size === 1) {
-                    return { row: kids[i].textContent.trim().slice(0, 60), values: filled };
+                    return { grid: true, compared,
+                             identical: { row: kids[i].textContent.trim().slice(0, 60),
+                                          values: filled } };
                 }
             }
-            return null;
+            return { grid: true, compared, identical: null };
         }"""
     )
+    assert scan["grid"], "Таблица сравнения .compare__table-grid не найдена"
+    assert scan["compared"] > 0, (
+        "В режиме «Различия» нет ни одной строки со значениями у двух товаров — "
+        "сверять нечего"
+    )
+    has_identical_row = scan["identical"]
     assert has_identical_row is None, (
         f"В режиме «Различия» обнаружена строка с одинаковыми значениями: "
         f"{has_identical_row}"

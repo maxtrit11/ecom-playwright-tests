@@ -166,7 +166,6 @@ def _click_sort_option(page: Page, label: str, attempts: int = 3) -> None:
     """
     for attempt in range(attempts):
         _open_sort_dropdown(page)
-        page.wait_for_timeout(400)
         try:
             _sort_option(page, label).first.click(timeout=5_000)
             return
@@ -234,7 +233,6 @@ def _pick_sort(page: Page, label: str) -> None:
     before = _grid_signature(page)
     page.evaluate("() => { window.__sortSig = null; }")
     _open_sort_dropdown(page)
-    page.wait_for_timeout(400)
     _sort_option(page, label).first.click()
     page.wait_for_function(
         "() => location.search.includes('sort=')", timeout=10_000
@@ -288,8 +286,10 @@ def test_sort_lowest_price_orders_ascending(page: Page):
     _pick_sort(page, SORT_LOWEST_PRICE)
 
     prices = _in_stock_prices(page)
-    if len(prices) < 2:
-        pytest.skip("Меньше двух товаров в наличии с ценой — порядок не проверить")
+    # Не skip, а падение: в категории десятки товаров, и «меньше двух цен» —
+    # это сломанный разбор цен (так уже было: функция месяцами возвращала [],
+    # и проверка порядка молча не проверяла ничего).
+    assert len(prices) >= 2, f"Меньше двух товаров в наличии с ценой: {prices}"
 
     assert prices == sorted(prices), (
         f"Цены не по возрастанию при сортировке «по возрастанию цены»: {prices}"
@@ -313,8 +313,10 @@ def test_sort_highest_price_orders_descending(page: Page):
     _pick_sort(page, SORT_HIGHEST_PRICE)
 
     prices = _in_stock_prices(page)
-    if len(prices) < 2:
-        pytest.skip("Меньше двух товаров в наличии с ценой — порядок не проверить")
+    # Не skip, а падение: в категории десятки товаров, и «меньше двух цен» —
+    # это сломанный разбор цен (так уже было: функция месяцами возвращала [],
+    # и проверка порядка молча не проверяла ничего).
+    assert len(prices) >= 2, f"Меньше двух товаров в наличии с ценой: {prices}"
 
     assert prices == sorted(prices, reverse=True), (
         f"Цены не по убыванию при сортировке «по убыванию цены»: {prices}"
@@ -334,8 +336,9 @@ def test_sort_by_name_orders_alphabetically(page: Page):
     _pick_sort(page, SORT_BY_NAME)
 
     names = _card_names(page)
-    if len(names) < 2:
-        pytest.skip("Меньше двух товаров в выдаче — порядок не проверить")
+    # Фикстура уже дождалась карточек, поэтому < 2 названий — сломанный
+    # селектор названия, а не пустая категория: падаем, а не пропускаем.
+    assert len(names) >= 2, f"Меньше двух названий товаров в выдаче: {names}"
 
     keys = [n.casefold() for n in names]
     assert keys == sorted(keys), (
@@ -351,8 +354,9 @@ def test_sort_by_name_reversed_orders_backwards(page: Page):
     _pick_sort(page, SORT_BY_NAME_DESC)
 
     names = _card_names(page)
-    if len(names) < 2:
-        pytest.skip("Меньше двух товаров в выдаче — порядок не проверить")
+    # Фикстура уже дождалась карточек, поэтому < 2 названий — сломанный
+    # селектор названия, а не пустая категория: падаем, а не пропускаем.
+    assert len(names) >= 2, f"Меньше двух названий товаров в выдаче: {names}"
 
     keys = [n.casefold() for n in names]
     assert keys == sorted(keys, reverse=True), (
@@ -395,7 +399,11 @@ def test_sort_persists_on_reload(page: Page):
 # ===========================================================================
 def test_sort_resets_pagination_to_first_page(page: Page):
     """Находясь на стр.2, выбрать сортировку → пагинация возвращается на стр.1."""
-    if page.locator(NEXT_BUTTON).count() == 0:
+    # Пагинация дорисовывается после карточек: мгновенный count() сразу за
+    # фикстурой давал ложное «одна страница» и молчаливый skip.
+    try:
+        expect(page.locator(NEXT_BUTTON).first).to_be_visible(timeout=10_000)
+    except AssertionError:
         pytest.skip("На этой категории одна страница — сбрасывать нечего")
 
     page.locator(NEXT_BUTTON).first.click()

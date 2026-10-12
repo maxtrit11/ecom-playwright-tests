@@ -274,8 +274,11 @@ def test_delete_one_product_from_cart(cart_with_product: Page, in_stock_products
     # уменьшение числа карточек после удаления).
     second_url = in_stock_products[1] if len(in_stock_products) > 1 else in_stock_products[0]
     # Закрываем дровер, идём на второй PDP, добавляем, возвращаемся
-    page.locator(BTN_CLOSE).click()
-    page.wait_for_timeout(400)
+    _click_until(
+        page,
+        page.locator(BTN_CLOSE),
+        lambda: page.locator(CART_MODAL_SHOWN).count() == 0,
+    )
     _add_one_product_to_cart(page, second_url)
     _open_cart_drawer(page)
 

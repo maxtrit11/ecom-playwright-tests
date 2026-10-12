@@ -5,6 +5,8 @@ import re
 import pytest
 from playwright.sync_api import Page, expect
 
+from conftest import wait_until
+
 # Селекторы
 CATALOG_BTN = ".btn__catalog"
 MENU_ITEMS = ".menu__items"
@@ -42,10 +44,16 @@ def hover_category_with_subcategories(page: Page):
     for i in range(count):
         cat = categories.nth(i)
         cat.hover()
-        page.wait_for_timeout(300)
-        active_panel = page.locator(f"{SUBCATEGORIES}.active")
-        if active_panel.count() > 0 and active_panel.locator(SUBCATEGORY_LINK).count() > 0:
+        # Ждём панель с подкатегориями по факту (до 3 с), а не 300 мс наугад:
+        # под нагрузкой панель не успевала, и категорию с подкатегориями
+        # пропускали как пустую.
+        try:
+            expect(
+                page.locator(f"{SUBCATEGORIES}.active {SUBCATEGORY_LINK}").first
+            ).to_be_visible(timeout=3_000)
             return cat
+        except AssertionError:
+            continue
     pytest.skip("Ни у одной категории нет подкатегорий")
 
 
@@ -95,19 +103,26 @@ def test_category_hover_highlight(page: Page):
     open_catalog(page)
 
     category = page.locator(CATEGORY_LINK).first
-    # Запоминаем цвет до hover
-    color_before = category.evaluate("el => getComputedStyle(el).color")
+    style_js = "el => [getComputedStyle(el).color, getComputedStyle(el).backgroundColor]"
+    # Запоминаем стиль до hover. Первая категория при открытии меню уже
+    # отмечена `active` (оранжевый текст), но фон у неё прозрачный — hover
+    # даёт голубую подложку rgb(242, 246, 255) (замер 12.10.2026).
+    style_before = category.evaluate(style_js)
 
     category.hover()
-    page.wait_for_timeout(400)
 
-    # После hover — категория получает класс active или меняет стиль
-    color_after = category.evaluate("el => getComputedStyle(el).color")
-    bg_after = category.evaluate("el => getComputedStyle(el).backgroundColor")
-
-    # Проверяем что стиль изменился (цвет текста или фон)
-    style_changed = color_before != color_after or bg_after != "rgba(0, 0, 0, 0)"
-    assert style_changed, "Hover не меняет стиль категории"
+    # Ждём смену стиля по факту (CSS-переход), а не 400 мс. Сравниваем с
+    # исходным стилем, а не с «прозрачным фоном»: при непрозрачном фоне в
+    # покое прежняя проверка была бы истинной и без всякого hover.
+    style_after = wait_until(
+        page,
+        lambda: category.evaluate(style_js),
+        lambda value: value != style_before,
+        timeout_ms=3_000,
+    )
+    assert style_after != style_before, (
+        f"Hover не меняет стиль категории: цвет/фон {style_before} → {style_after}"
+    )
 
 
 # ===========================================================================
@@ -226,10 +241,16 @@ def test_navigate_to_product_list_page(page: Page):
     # Хлебные крошки
     expect(page.locator(BREADCRUMB_CURRENT)).to_be_visible(timeout=10_000)
 
-    # Проверяем наличие товаров или подкатегорий на странице
-    has_products = page.locator("[class*='product'], [class*='card']").count() > 0
-    has_subcategories = page.locator("[class*='subcategor'], [class*='category']").count() > 0
-    assert has_products or has_subcategories, "Страница не содержит товаров или подкатегорий"
+    # Проверяем наличие товаров или подкатегорий на странице. Прежняя
+    # проверка `[class*='product'], [class*='card']` / `[class*='category']`
+    # была истинна на ЛЮБОЙ странице (шапка и меню каталога сами несут такие
+    # классы) — пустая категория проходила тест.
+    expect(
+        page.locator(
+            ".product__items .product__item, .filters-vertical--subcategory"
+        ).first,
+        "Страница не содержит товаров или подкатегорий",
+    ).to_be_visible(timeout=15_000)
 
 
 # ===========================================================================
@@ -253,17 +274,18 @@ def test_navigate_via_all_category_button(page: Page):
             "a:has-text('Все'), button:has-text('Все')"
         ).first
 
-    if all_btn.count() > 0 and all_btn.is_visible():
-        all_btn.click()
-        page.wait_for_load_state("networkidle")
+    # Раньше отсутствие кнопки давало skip (после мгновенного count()), то есть
+    # пропади «Все <категория>» — кейс молча перестал бы проверяться. Кнопка в
+    # футере панели есть (проверено 12.10.2026) — ждём её и падаем, если нет.
+    expect(all_btn, "Кнопка «Все <категория>» не найдена").to_be_visible(timeout=5_000)
+    all_btn.click()
+    page.wait_for_load_state("networkidle")
 
-        # Страница категории загрузилась
-        expect(page).not_to_have_url(
-            re.compile(r"^https?://[^/]+/ru/?$"), timeout=10_000
-        )
-        expect(page.locator(BREADCRUMB_CURRENT)).to_be_visible(timeout=10_000)
-    else:
-        pytest.skip("Кнопка «Все <категория>» не найдена")
+    # Страница категории загрузилась
+    expect(page).not_to_have_url(
+        re.compile(r"^https?://[^/]+/ru/?$"), timeout=10_000
+    )
+    expect(page.locator(BREADCRUMB_CURRENT)).to_be_visible(timeout=10_000)
 
 
 # ===========================================================================

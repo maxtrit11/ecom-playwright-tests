@@ -22,6 +22,8 @@ import re
 import pytest
 from playwright.sync_api import Locator, Page, expect
 
+from conftest import wait_until
+
 
 # URL категории — должен иметь и фильтры, и многостраничную пагинацию.
 # /ru/klipsch, а не /ro/jbl-tune (до 09.10.2026): в jbl-tune любой фильтр
@@ -151,9 +153,14 @@ def _wait_first_card_changed(page: Page, before_key: str | None,
 
 
 def _wait_after_filter(page: Page) -> None:
-    """Дождаться пересчёта выдачи бекендом и ре-рендера Vue."""
+    """Дождаться, пока бекенд ответит на смену фильтра.
+
+    Паузы 500 мс «на ре-рендер» здесь больше нет: счётчик и пагинация
+    отстают от сети до ~3 с, так что пауза всё равно не гарантировала
+    актуальных цифр. Их ждут по факту — `_wait_found_count_changed`,
+    `_wait_last_page`.
+    """
     page.wait_for_load_state("networkidle", timeout=15_000)
-    page.wait_for_timeout(500)
 
 
 _FOUND_JS = """
@@ -302,15 +309,33 @@ def _apply_filter_until_multipage(page: Page) -> bool:
             )
         except Exception:
             pass
-        page.wait_for_timeout(400)
+
+        # Пагинация и сетка перерисовываются вслед за счётчиком. Вместо паузы
+        # 400 мс ждём, пока картина (страниц / «вперёд» / найдено / карточек)
+        # перестанет меняться — два одинаковых замера подряд.
+        previous = [None]
+
+        def _settled(snapshot) -> bool:
+            same = snapshot == previous[0]
+            previous[0] = snapshot
+            return same
+
+        last_page, has_next, found, cards = wait_until(
+            page,
+            lambda: (
+                _last_page_number(page),
+                page.locator(NEXT_BUTTON).count() > 0,
+                _found_count(page),
+                page.locator(CARD).count(),
+            ),
+            _settled,
+            timeout_ms=5_000,
+            poll_ms=250,
+        )
 
         # Страниц больше одной — и по пагинации, и по счётчику против
         # фактического числа карточек на странице.
-        if (
-            _last_page_number(page) >= 2
-            and page.locator(NEXT_BUTTON).count() > 0
-            and _found_count(page) > page.locator(CARD).count()
-        ):
+        if last_page >= 2 and has_next and found > cards:
             return True
     return False
 
@@ -383,8 +408,11 @@ def test_filter_updates_result_count_and_page_structure(page: Page):
     )
     _wait_after_filter(page)
 
-    count_after = _found_count(page)
-    pages_after = _last_page_number(page)
+    # Счётчик и пагинация отстают от сети: мгновенное чтение давало прежние
+    # числа, и «не выросло» выполнялось вхолостую. Ждём смену счётчика, затем
+    # пагинацию под новое число страниц (15 товаров на страницу).
+    count_after = _wait_found_count_changed(page, count_before, timeout=10_000)
+    pages_after = _wait_last_page(page, max(1, -(-count_after // 15)), timeout=5_000)
 
     assert count_after <= count_before, (
         f"После фильтра число результатов выросло: {count_before} → {count_after}"
@@ -435,8 +463,9 @@ def test_removing_filter_restores_pagination(page: Page):
         "() => location.search.includes('filters=')", timeout=10_000
     )
     _wait_after_filter(page)
+    # Ждём, пока счётчик отразит фильтр; пауза 800 мс после этого была
+    # лишней — снятие ниже само ждёт URL и пагинацию.
     _wait_found_count_changed(page, count_before)
-    page.wait_for_timeout(800)
 
     # Снять тот же чекбокс по стабильному id
     page.locator(f'label[for="{label_id}"]').first.evaluate("el => el.click()")

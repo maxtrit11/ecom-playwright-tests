@@ -16,6 +16,8 @@ import re
 import pytest
 from playwright.sync_api import Page, expect
 
+from conftest import wait_until
+
 
 PRODUCT_URL = "/ru/product/klipsch-detroit"
 SECOND_PRODUCT_URL = "/ru/product/jbl-partybox-on-the-go-2"
@@ -98,6 +100,15 @@ def _add_to_favorites(page: Page):
     return btn
 
 
+def _wait_fav_count(page: Page, done) -> int:
+    """Дождаться нужного значения счётчика избранного в шапке и вернуть его.
+
+    Счётчик обновляется после ответа сервера, а не в момент смены класса
+    сердечка — вместо паузы в 500-800 мс опрашиваем его по факту.
+    """
+    return wait_until(page, lambda: _header_fav_count(page), done)
+
+
 def _clear_favorites(page: Page):
     """Сбросить избранное в localStorage + cookie."""
     page.evaluate(
@@ -130,9 +141,7 @@ def test_add_to_favorites_from_product_page(page: Page):
     count_before = _header_fav_count(page)
 
     btn = _add_to_favorites(page)
-    page.wait_for_timeout(800)
-
-    count_after = _header_fav_count(page)
+    count_after = _wait_fav_count(page, lambda value: value != count_before)
     assert count_after == count_before + 1, (
         f"Счётчик избранного в шапке не вырос: {count_before} → {count_after}"
     )
@@ -146,8 +155,11 @@ def test_remove_from_favorites_via_card_heart(page: Page):
     """Добавить товар → перейти на /favorites → клик по сердечку на карточке
     → карточка пропадает, счётчик в шапке уменьшается."""
     _add_to_favorites(page)
-    page.wait_for_timeout(800)
-    assert _header_fav_count(page) >= 1, "Товар не добавился в избранное"
+    # Ждём, что добавление дошло до шапки, прежде чем уходить со страницы:
+    # с фиксированной паузой на /favorites приезжали раньше товара.
+    assert _wait_fav_count(page, lambda value: value >= 1) >= 1, (
+        "Товар не добавился в избранное"
+    )
 
     page.goto(FAVORITES_URL, wait_until="domcontentloaded")
     expect(page.locator(PRODUCT_CARD).first).to_be_visible(timeout=FAV_CARDS_TIMEOUT)
@@ -155,16 +167,14 @@ def test_remove_from_favorites_via_card_heart(page: Page):
 
     # Hover карточки (по кейсу — кнопки появляются при наведении)
     page.locator(PRODUCT_CARD).first.hover()
-    page.wait_for_timeout(300)
 
-    # Клик по активному сердечку
+    # Клик по активному сердечку (click сам дождётся, пока оно проявится)
     page.locator(CARD_HEART_ACTIVE).first.click()
-    page.wait_for_timeout(800)
 
     # Карточка пропала
     expect(page.locator(PRODUCT_CARD)).to_have_count(0, timeout=10_000)
     # Счётчик уменьшился
-    count_after = _header_fav_count(page)
+    count_after = _wait_fav_count(page, lambda value: value != count_before)
     assert count_after == count_before - 1, (
         f"Счётчик избранного не уменьшился: {count_before} → {count_after}"
     )
@@ -176,7 +186,7 @@ def test_remove_from_favorites_via_card_heart(page: Page):
 def test_open_favorites_page_via_header(page: Page):
     """Клик на «Избранное» в шапке → переход на /ru/favorites."""
     _add_to_favorites(page)
-    page.wait_for_timeout(500)
+    _wait_fav_count(page, lambda value: value >= 1)
 
     header_link = page.locator(HEADER_FAV_LINK).first
     expect(header_link).to_be_visible()
@@ -184,11 +194,10 @@ def test_open_favorites_page_via_header(page: Page):
 
     header_link.click()
     page.wait_for_url(re.compile(r"/favorites$"), timeout=10_000)
-    # Дожидаемся отрисовки контента (Vue лениво рендерит)
-    page.wait_for_selector(
-        f"{PRODUCT_CARD}, {EMPTY_STUB}", state="attached", timeout=15_000
-    )
-    assert page.locator(PRODUCT_CARD).count() > 0 or page.locator(EMPTY_STUB).count() > 0
+    # Только что добавленный товар должен быть на странице. Прежнее «карточка
+    # ИЛИ заглушка пустого списка» засчитывало и пустое избранное — то есть
+    # тест зеленел, даже если товар до /favorites не доехал.
+    expect(page.locator(PRODUCT_CARD).first).to_be_visible(timeout=FAV_CARDS_TIMEOUT)
 
 
 # ===========================================================================
@@ -215,13 +224,10 @@ def test_open_favorites_via_notification_after_add(page: Page):
 
     link.click()
     page.wait_for_url(re.compile(r"/favorites$"), timeout=10_000)
-    # Контент рисуется Vue уже ПОСЛЕ смены URL, поэтому мгновенный count() даёт
-    # ноль и там, и там (тест падал на `0 > 0 or 0 > 0` при живой странице).
-    # Ждём появления карточки или заглушки — как в соседнем кейсе 262.
-    page.wait_for_selector(
-        f"{PRODUCT_CARD}, {EMPTY_STUB}", state="attached", timeout=15_000
-    )
-    assert page.locator(PRODUCT_CARD).count() > 0 or page.locator(EMPTY_STUB).count() > 0
+    # Контент рисуется Vue уже ПОСЛЕ смены URL — ждём карточку, а не считаем
+    # мгновенно. И ждём именно карточку: товар только что добавлен, а прежнее
+    # «карточка ИЛИ заглушка» засчитывало и пустой список.
+    expect(page.locator(PRODUCT_CARD).first).to_be_visible(timeout=FAV_CARDS_TIMEOUT)
 
 
 # ===========================================================================
@@ -231,7 +237,7 @@ def test_remove_all_favorites(page: Page):
     """Добавить товар → /favorites → клик «Удалить все товары из избранного»
     → все карточки удалены, счётчик = 0, отображается заглушка."""
     _add_to_favorites(page)
-    page.wait_for_timeout(800)
+    _wait_fav_count(page, lambda value: value >= 1)
 
     page.goto(FAVORITES_URL, wait_until="domcontentloaded")
     expect(page.locator(PRODUCT_CARD).first).to_be_visible(timeout=FAV_CARDS_TIMEOUT)
@@ -239,10 +245,11 @@ def test_remove_all_favorites(page: Page):
     remove_all = page.locator(BTN_REMOVE_ALL).first
     expect(remove_all).to_be_visible()
     remove_all.click()
-    page.wait_for_timeout(800)
 
     expect(page.locator(PRODUCT_CARD)).to_have_count(0, timeout=10_000)
-    assert _header_fav_count(page) == 0, "Счётчик в шапке не обнулился"
+    assert _wait_fav_count(page, lambda value: value == 0) == 0, (
+        "Счётчик в шапке не обнулился"
+    )
     expect(page.locator(EMPTY_STUB)).to_be_visible()
 
 
@@ -268,6 +275,10 @@ def test_add_to_favorites_from_catalog_card(page: Page):
         CATALOG_CARD_WITH_HEART,
     )
     page.wait_for_selector(CATALOG_CARD_WITH_HEART, state="attached", timeout=15_000)
+    # Пауза намеренная: карусель доигрывает анимацию появления, и карточка
+    # «не стабильна». Без паузы (проверено 12.10.2026) клик по сердечку
+    # прокручивал карточку под липкую шапку, hover слетал, сердечко пряталось —
+    # 45 с таймаута. Наблюдаемого признака конца анимации у карусели нет.
     page.wait_for_timeout(500)
 
     card = page.locator(CATALOG_CARD_WITH_HEART).first
@@ -287,7 +298,7 @@ def test_add_to_favorites_from_catalog_card(page: Page):
     # карточка не перейдёт в is-active.
     for _ in range(3):
         card.hover()
-        page.wait_for_timeout(300)
+        page.wait_for_timeout(300)  # CSS-переход проявления сердечка после hover
         heart.click()
         try:
             expect(heart).to_have_class(re.compile(r"\bis-active\b"), timeout=3_000)
@@ -295,7 +306,7 @@ def test_add_to_favorites_from_catalog_card(page: Page):
         except AssertionError:
             page.wait_for_timeout(500)
 
-    count_after = _header_fav_count(page)
+    count_after = _wait_fav_count(page, lambda value: value != count_before)
     assert count_after == count_before + 1, (
         f"Счётчик избранного не вырос: {count_before} → {count_after}"
     )
@@ -311,17 +322,19 @@ def test_multiple_favorites_render_correctly(page: Page):
     имеют положительные размеры и не перекрывают друг друга."""
     # Добавляем первый товар
     _add_to_favorites(page)
-    page.wait_for_timeout(500)
+    _wait_fav_count(page, lambda value: value >= 1)
     # Второй товар
     page.goto(SECOND_PRODUCT_URL, wait_until="domcontentloaded")
     expect(page.locator(BTN_FAV_PRODUCT).first).to_be_visible(timeout=10_000)
     _add_to_favorites(page)
-    page.wait_for_timeout(800)
+    _wait_fav_count(page, lambda value: value >= 2)
 
     page.goto(FAVORITES_URL, wait_until="domcontentloaded")
     cards = page.locator(PRODUCT_CARD)
     expect(cards.first).to_be_visible(timeout=FAV_CARDS_TIMEOUT)
-    assert cards.count() >= 2, f"Ожидалось ≥2 карточек, фактически {cards.count()}"
+    # Карточки дорисовываются по мере догрузки товаров — ждём вторую по факту
+    n_cards = wait_until(page, cards.count, lambda value: value >= 2)
+    assert n_cards >= 2, f"Ожидалось ≥2 карточек, фактически {n_cards}"
 
     # Все карточки должны иметь положительные bbox и не перекрываться
     overlap = page.evaluate(
@@ -357,7 +370,7 @@ def test_multiple_favorites_render_correctly(page: Page):
 def test_open_product_page_from_favorites_card(page: Page):
     """Клик по карточке товара на /favorites → переход на страницу товара."""
     _add_to_favorites(page)
-    page.wait_for_timeout(800)
+    _wait_fav_count(page, lambda value: value >= 1)
 
     page.goto(FAVORITES_URL, wait_until="domcontentloaded")
     card = page.locator(PRODUCT_CARD).first

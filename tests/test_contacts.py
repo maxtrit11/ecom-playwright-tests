@@ -99,8 +99,12 @@ def _digits(text: str) -> str:
 def contacts(page: Page) -> Page:
     page.goto(CONTACTS_URL, wait_until="domcontentloaded", timeout=60_000)
     expect(page.locator(ITEM).first).to_be_visible(timeout=30_000)
-    if not _shops(page):
-        pytest.skip("В данных страницы нет ни одного магазина")
+    # Аккордеон магазинов на странице уже есть — значит, пустые данные означают
+    # сломанный путь в __NUXT__, а не «магазинов нет». Раньше это давало skip
+    # всех тестов файла.
+    assert _shops(page), (
+        "Аккордеон магазинов отрисован, а в __NUXT__ (contacts.shops) магазинов нет"
+    )
     return page
 
 

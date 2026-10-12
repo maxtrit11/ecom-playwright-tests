@@ -144,23 +144,23 @@ def test_empty_phone_shows_error_on_submit(open_one_click_popup: Page):
     page = open_one_click_popup
 
     tel = page.locator(INPUT_TEL).first
-    border_before = tel.evaluate("el => getComputedStyle(el).borderColor")
 
     page.locator(BTN_SUBMIT).first.click()
-    page.wait_for_timeout(800)
 
-    border_after = tel.evaluate("el => getComputedStyle(el).borderColor")
-    is_red = "rgb(229, 57, 53)" in border_after
-    changed = border_before != border_after
-
-    has_validation = page.locator(
-        f'{MODAL} .validation, {MODAL} [class*="error"]'
-    ).filter(has_text=re.compile(r"обязательное|обязательн", re.IGNORECASE)).count() > 0
-
-    assert is_red or changed or has_validation, (
-        f"Поле Телефон не подсветилось ошибкой: border {border_before} → {border_after}, "
-        f"validation={has_validation}"
+    # Прежняя проверка не могла упасть: `span.validation` с текстом «Это
+    # обязательное поле» лежит в DOM поп-апа ВСЕГДА, просто скрыт до сабмита
+    # (проверено 12.10.2026), а она считала его наличие без учёта видимости —
+    # `has_validation` был истинным ещё до клика. Проверяем то, что обещает
+    # кейс: красную рамку и ВИДИМЫЙ текст ошибки. Ждём по факту, а не 800 мс.
+    expect(tel, "Поле Телефон не подсветилось красной рамкой").to_have_css(
+        "border-color", "rgb(229, 57, 53)", timeout=5_000
     )
+    expect(
+        page.locator(f"{MODAL} .validation").filter(
+            has_text=re.compile(r"обязательн", re.IGNORECASE)
+        ).first,
+        "Текст «Это обязательное поле» не появился",
+    ).to_be_visible()
 
     expect(page.locator(MODAL)).to_be_visible()
 

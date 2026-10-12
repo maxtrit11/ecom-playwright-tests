@@ -5,7 +5,9 @@ import re
 import pytest
 from playwright.sync_api import Page, expect
 
-from test_sorting import _in_stock_prices
+from conftest import wait_until
+from test_product_listing import BTN_VIEW_LIST, VIEW_ACTIVE
+from test_sorting import _grid_signature, _in_stock_prices, _wait_grid_changed
 
 # Селекторы поиска
 # В DOM главной страницы — две копии каждого элемента поиска (десктопный
@@ -37,6 +39,12 @@ SEARCH_PAGE_VIEW_BTNS = "[class*='view'], [class*='display']"
 # Контрол сортировки на странице результатов (та же разметка, что в категории)
 SORT_BTN = ".sorting-bar__btn"
 SORT_OPTION = ".sorting-bar__list span"
+SORT_LIST_SHOWN = ".sorting-bar__list.show"
+
+# Сетка результатов и заглушка «ничего не найдено» на /search (DOM снят
+# 12.10.2026: та же вёрстка, что у листинга категории)
+RESULT_CARD = ".product__items .product__item"
+SEARCH_PAGE_EMPTY = ".catalog__container--empty"
 
 
 def _card_prices(page: Page) -> list[int]:
@@ -71,10 +79,17 @@ def open_main_page(page: Page):
 
 
 def type_in_search(page: Page, text: str):
-    """Ввести текст в поле поиска и дождаться результатов."""
+    """Ввести текст в поле поиска и дождаться выпадашки.
+
+    Раньше здесь стояла пауза 1 с «на debounce», после которой часть тестов
+    мгновенно считала карточки. Теперь ждём сам результат: карточки или
+    заглушку «ничего не найдено» (как в мобильном зеркале).
+    """
     page.locator(SEARCH_INPUT).click()
     page.locator(SEARCH_INPUT).fill(text)
-    page.wait_for_timeout(1000)  # debounce
+    expect(
+        page.locator(f"{RESULT_PRODUCT}, {MESSAGE_NO_RESULTS}").first
+    ).to_be_visible(timeout=15_000)
 
 
 def go_to_search_results_page(page: Page, query: str):
@@ -125,10 +140,10 @@ def test_popular_queries_displayed_on_focus(page: Page):
     expect(badges.first).to_be_visible(timeout=5_000)
 
     badges.first.click()
-    page.wait_for_timeout(1000)
 
-    search_value = page.locator(SEARCH_INPUT).input_value()
-    assert search_value.strip() != "", "Значение не подставилось в поле поиска"
+    expect(
+        page.locator(SEARCH_INPUT), "Значение не подставилось в поле поиска"
+    ).not_to_have_value(re.compile(r"^\s*$"), timeout=5_000)
 
 
 # Кейс 15: Список результатов при вводе существующего значения
@@ -234,35 +249,41 @@ def test_close_search_and_clear_input(page: Page):
     # Ждём появления результатов или блока
     expect(page.locator(MODAL_SEARCH_SHOW)).to_be_visible(timeout=5_000)
 
-    # Нажать X
+    # Нажать X. Раньше при мгновенном `is_visible() == False` тест уходил в
+    # skip — пропади крестик, кейс молча перестал бы проверяться. На десктопе
+    # он есть (проверено 12.10.2026), поэтому ждём его и падаем, если нет.
     delete_btn = page.locator(BTN_DELETE)
-    if delete_btn.is_visible():
-        delete_btn.click()
-        page.wait_for_timeout(500)
+    expect(delete_btn).to_be_visible(timeout=5_000)
+    delete_btn.click()
 
-        # Блок закрылся
-        expect(page.locator(MODAL_SEARCH_SHOW)).not_to_be_visible(timeout=5_000)
+    # Блок закрылся
+    expect(page.locator(MODAL_SEARCH_SHOW)).not_to_be_visible(timeout=5_000)
 
-        # Поле очищено
-        assert page.locator(SEARCH_INPUT).input_value() == ""
-    else:
-        pytest.skip("Кнопка X не видна на данном варианте верстки")
+    # Поле очищено
+    expect(page.locator(SEARCH_INPUT)).to_have_value("")
 
 
 # Кейс 293: Поиск с пробелами в начале/конце
 def test_search_with_leading_trailing_spaces(page: Page):
     """Поиск с пробелами — результаты такие же как без пробелов."""
-    # Поиск без пробелов
+    # Поиск без пробелов. Прежняя версия считала карточки после пауз, и при
+    # недогрузке выдачи сравнивала 0 == 0 — тест проходил, ничего не найдя.
     type_in_search(page, "pink")
-    page.wait_for_timeout(1000)
+    expect(page.locator(RESULT_PRODUCT).first).to_be_visible(timeout=15_000)
     products_normal = page.locator(RESULT_PRODUCT).count()
+    assert products_normal > 0, "По запросу «pink» ничего не нашлось — сравнивать нечего"
 
-    # Очищаем и ищем с пробелами
-    page.locator(SEARCH_INPUT).fill("")
-    page.wait_for_timeout(500)
+    # Ищем с пробелами на свежей странице: в той же выпадашке второй запрос
+    # мог бы застать на экране выдачу первого и совпасть с ней «сам собой».
+    page.reload()
+    expect(page.locator(SEARCH_INPUT)).to_be_visible(timeout=10_000)
+    expect(page.locator(RESULT_PRODUCT)).to_have_count(0)
     type_in_search(page, "  pink  ")
-    page.wait_for_timeout(1000)
-    products_spaces = page.locator(RESULT_PRODUCT).count()
+    products_spaces = wait_until(
+        page,
+        lambda: page.locator(RESULT_PRODUCT).count(),
+        lambda value: value > 0,
+    )
 
     # Результаты совпадают
     assert products_normal == products_spaces, (
@@ -288,10 +309,10 @@ def test_search_via_enter_shows_results_page(page: Page):
     # Страница результатов
     expect(page).to_have_url(re.compile(r"search\?query="), timeout=10_000)
 
-    # Есть товары
-    page.wait_for_timeout(1000)
-    body_text = page.locator("body").text_content()
-    assert EXISTING_QUERY.lower() in body_text.lower() or len(body_text) > 500
+    # Есть товары. Прежний ассерт `"jbl" in body or len(body) > 500` был
+    # тавтологией: «JBL» есть в шапке и футере любой страницы, а длина body
+    # всегда больше 500 символов — проходил и на пустой выдаче.
+    expect(page.locator(RESULT_CARD).first).to_be_visible(timeout=15_000)
 
 
 # Кейс 329: Отрицательный сценарий — товар не найден
@@ -300,14 +321,16 @@ def test_search_no_results_on_results_page(page: Page):
     заглушка «не найдено», нет ошибок верстки."""
     go_to_search_results_page(page, NON_EXISTING_QUERY)
 
-    # Страница не пустая, нет ошибок — заглушка или текст «не найдено»
-    page.wait_for_timeout(1000)
-    body = page.locator("body")
-    expect(body).to_be_visible()
+    # Заглушка «ничего не найдено». Раньше проверялось лишь «body виден» после
+    # паузы, а отсутствие товаров — мгновенным count(): пустая/недогруженная
+    # страница проходила тест так же, как правильная заглушка.
+    empty = page.locator(SEARCH_PAGE_EMPTY).first
+    expect(empty).to_be_visible(timeout=15_000)
+    expect(empty).to_contain_text(re.compile(r"ничего не найдено", re.I))
 
-    # Товары не отображаются
+    # Товары не отображаются (заглушка видна — значит, выдача уже отрисована)
     products = page.locator(SEARCH_PAGE_PRODUCTS)
-    assert products.count() == 0, "Найдены товары для несуществующего запроса"
+    expect(products, "Найдены товары для несуществующего запроса").to_have_count(0)
 
 
 # Кейс 330: Смена контента при новом запросе
@@ -365,20 +388,16 @@ def test_filters_displayed_on_search_results_page(page: Page):
     верстка не ломается."""
     go_to_search_results_page(page, "pink")
 
-    page.wait_for_timeout(1000)
     # Фильтры на странице результатов — это сайдбар .filters-vertical (как на
     # странице категории). Широкий [class*='filter'] первым матчит СКРЫТЫЙ
     # .filter-btn (mobile-тоггл), из-за чего .first.to_be_visible() давал ложное
     # падение — проверяем именно видимый контейнер фильтров.
+    # Раньше после паузы шёл мгновенный count() с запасным вариантом «любой
+    # видимый [class*='sidebar']» и skip: фильтры могли пропасть, а тест —
+    # пройти по постороннему сайдбару. Теперь ждём именно блок фильтров.
     filters = page.locator(".filters-vertical, .filter-vertical-container").first
-    if filters.count() > 0:
-        expect(filters).to_be_visible()
-    else:
-        sidebar = page.locator("[class*='sidebar'], [class*='aside']")
-        if sidebar.count() > 0:
-            expect(sidebar.first).to_be_visible()
-        else:
-            pytest.skip("Блок фильтров не найден на странице результатов")
+    expect(filters).to_be_visible(timeout=15_000)
+    expect(filters.locator("input[type=checkbox]").first).to_be_attached()
 
 
 # Кейс 297: Сортировка — открытие списка
@@ -387,24 +406,24 @@ def test_sort_dropdown_opens_on_results_page(page: Page):
     элементы кликабельны."""
     go_to_search_results_page(page, EXISTING_QUERY)
 
-    sort_block = page.locator(SEARCH_PAGE_SORT)
-    if sort_block.count() == 0:
-        sort_block = page.locator("button:has-text('умолчанию'), [class*='sort']")
-
-    if sort_block.count() > 0 and sort_block.first.is_visible():
-        sort_block.first.click()
-        page.wait_for_timeout(500)
-
-        # На стейдже опции — <span> внутри .sorting-bar__list, поэтому
-        # перечисляем span/li/a/option, чтобы покрыть оба варианта вёрстки
-        sort_options = page.locator(
-            ".sorting-bar__list span, "
-            "[class*='sort'] li, [class*='sort'] option, "
-            "[class*='dropdown'] li, [class*='sort'] a"
-        )
-        assert sort_options.count() >= 2, "Список сортировок не раскрылся"
-    else:
-        pytest.skip("Блок сортировки не найден")
+    # Раньше кликался широкий `[class*='sort'].first` — обёртка
+    # `div.catalog__sort`, по которой список не открывается, — а затем
+    # считались опции `.sorting-bar__list span`, которые лежат в DOM ВСЕГДА
+    # (скрытыми). Тест проходил, не раскрыв список. Теперь кликаем саму кнопку
+    # и ждём видимый список (класс `show`), как в tests/test_sorting.py.
+    sort_btn = page.locator(SORT_BTN).first
+    expect(sort_btn).to_be_visible(timeout=15_000)
+    for _ in range(3):
+        sort_btn.click()
+        try:
+            expect(page.locator(SORT_LIST_SHOWN)).to_be_visible(timeout=3_000)
+            break
+        except AssertionError:
+            continue
+    expect(page.locator(SORT_LIST_SHOWN), "Список сортировок не раскрылся").to_be_visible()
+    options = page.locator(f"{SORT_LIST_SHOWN} span")
+    assert options.count() >= 2, "В раскрытом списке сортировок меньше двух вариантов"
+    expect(options.first).to_be_visible()
 
 
 # Кейс 298: Смена вида отображения (плитка/список)
@@ -413,17 +432,22 @@ def test_toggle_view_mode_on_results_page(page: Page):
     отображение, данные сохраняются."""
     go_to_search_results_page(page, EXISTING_QUERY)
 
-    view_btns = page.locator(SEARCH_PAGE_VIEW_BTNS + " button, " + SEARCH_PAGE_VIEW_BTNS)
-    if view_btns.count() >= 2:
-        # Нажимаем на второй вариант
-        view_btns.nth(1).click()
-        page.wait_for_timeout(500)
+    # Раньше «кнопками вида» считалось всё с `view`/`display` в классе (под
+    # такой селектор попадает что угодно), кликался второй найденный элемент,
+    # а итог проверялся мгновенным count() карточек в DOM — то есть вид мог
+    # вовсе не переключиться. Тумблер тот же, что в листинге категории.
+    cards = page.locator(RESULT_CARD)
+    expect(cards.first).to_be_visible(timeout=15_000)
+    count_before = cards.count()
 
-        # Товары всё ещё отображаются
-        products = page.locator(SEARCH_PAGE_PRODUCTS)
-        assert products.count() > 0, "Товары пропали после смены вида"
-    else:
-        pytest.skip("Кнопки переключения вида не найдены")
+    page.locator(BTN_VIEW_LIST).click()
+
+    expect(page.locator(VIEW_ACTIVE)).to_have_attribute(
+        "title", "Посмотреть в виде списка", timeout=10_000
+    )
+    # Товары остались те же
+    expect(cards, "Товары пропали после смены вида").to_have_count(count_before)
+    expect(cards.first).to_be_visible()
 
 
 # Кейс 331: Сортировка — от низкой цены к высокой
@@ -444,6 +468,8 @@ def test_sort_by_price_ascending(page: Page):
     expect(sort_btn).to_be_visible(timeout=15_000)
     sort_before = page.evaluate("() => new URLSearchParams(location.search).get('sort')")
 
+    grid_before = _grid_signature(page)
+    page.evaluate("() => { window.__sortSig = null; }")
     sort_btn.click()
     low_price_option = page.locator(SORT_OPTION).filter(
         has_text=re.compile(r"[Нн]изк|[Ll]ow|[Cc]rescător")
@@ -456,8 +482,12 @@ def test_sort_by_price_ascending(page: Page):
         timeout=20_000,
     )
     page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(1000)
 
+    # Грид перерисовывается позже смены URL. Вместо секунды по часам ждём,
+    # пока выдача сменится и перестанет меняться (хелпер сортировки категории).
+    # Не «пока станет по возрастанию» — это был бы ассерт, вывернутый в
+    # ожидание. Не дождались — ассерт ниже покажет прочитанные цены.
+    _wait_grid_changed(page, grid_before)
     price_values = _card_prices(page)
     assert len(price_values) >= 2, (
         f"На странице результатов меньше двух цен товаров в наличии: {price_values}"

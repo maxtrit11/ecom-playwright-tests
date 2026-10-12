@@ -193,10 +193,17 @@ def test_quantity_controls_disabled(page: Page):
 def test_one_click_and_credit_disabled(page: Page):
     """«Покупка в один клик» и «В кредит» для предзаказа — disabled."""
     one_click = page.locator(BTN_ONE_CLICK).first
+    credit = page.locator(BTN_CREDIT).first
+    # Обе проверки ниже стоят под `if`: кнопки кредита нет у товаров без
+    # кредита (credit.has=false), это штатно. Но если пропадут ОБЕ кнопки,
+    # тест проходил, не проверив ничего, — поэтому хотя бы одна обязана быть.
+    assert one_click.count() + credit.count() > 0, (
+        "На странице предзаказа нет ни «Покупки в один клик», ни «В кредит» — "
+        "проверять нечего"
+    )
     if one_click.count() > 0:
         expect(one_click).to_be_disabled()
 
-    credit = page.locator(BTN_CREDIT).first
     if credit.count() > 0:
         expect(credit).to_be_disabled()
 
@@ -271,9 +278,23 @@ def test_close_preorder_popup(page: Page):
 def test_preorder_does_not_add_to_cart(page: Page):
     """Открытие предзаказа не добавляет товар в корзину (сумма в шапке не растёт)."""
     sum_before = _header_cart_sum(page)
+    # Прежняя проверка читала сумму сразу после открытия поп-апа — раньше,
+    # чем запрос в корзину успел бы дойти, то есть «не изменилась» выполнялось
+    # вхолостую. Теперь слушаем запросы, меняющие корзину, и даём им окно.
+    cart_writes: list[str] = []
+    page.on(
+        "request",
+        lambda r: cart_writes.append(f"{r.method} {r.url}")
+        if "cart" in r.url.lower() and r.method in ("POST", "PUT", "PATCH")
+        else None,
+    )
 
     _open_preorder_modal(page)
+    # Пауза намеренная: доказываем, что запрос в корзину НЕ уйдёт и сумма
+    # не изменится (запоздалое добавление прилетело бы за ~1 с).
+    page.wait_for_timeout(2_500)
 
+    assert not cart_writes, f"Открытие предзаказа отправило запросы в корзину: {cart_writes}"
     sum_after = _header_cart_sum(page)
     assert sum_after == sum_before, (
         f"Предзаказ не должен менять корзину: было {sum_before}, стало {sum_after}"

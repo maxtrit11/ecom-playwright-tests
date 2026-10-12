@@ -144,10 +144,16 @@ def test_every_product_is_bestseller(promo: Page):
     page = promo
     data = _page_data(page)
 
+    # «Все товары — бестселлеры» истинно и на пустом списке: если путь в
+    # __NUXT__ переименуют, данные придут пустыми, а проверка — зелёной.
+    cards = page.locator(CARD)
+    assert data["products"], "В данных подборки (__NUXT__.state.products) нет товаров"
+    assert len(data["products"]) == cards.count(), (
+        f"В данных {len(data['products'])} товаров, а карточек {cards.count()}"
+    )
     wrong = _not_bestsellers(data["products"])
     assert not wrong, f"В подборке товары без статуса {STATUS}: {wrong}"
 
-    cards = page.locator(CARD)
     no_badge = [
         _card_slugs(page)[i]
         for i in range(cards.count())
@@ -173,19 +179,24 @@ def test_homepage_carousel_see_all_opens_bestseller(page: Page):
     """На главной «Смотреть все» у карусели «Bestseller» открывает подборку,
     и все товары карусели в ней есть."""
     page.goto(HOME_URL, wait_until="domcontentloaded", timeout=60_000)
-    index = page.evaluate(
-        """(href) => [...document.querySelectorAll('.products__wrapper')]
-            .findIndex(b => b.querySelector('a[href$="' + href + '"]'))""",
-        PROMO_URL,
-    )
-    if index < 0:
+    # Карусели монтируются лениво и по порядку (см. test_homepage.py), поэтому
+    # ищем нужную, прокручивая их по одной. Раньше индекс искали мгновенным
+    # evaluate сразу после загрузки — до монтирования ссылки нет, и тест молча
+    # уходил в skip.
+    expect(page.locator(CAROUSEL).first).to_be_attached(timeout=30_000)
+    carousel = None
+    for i in range(page.locator(CAROUSEL).count()):
+        block = page.locator(CAROUSEL).nth(i)
+        block.scroll_into_view_if_needed()
+        try:
+            expect(block.locator(".product__item").first).to_be_visible(timeout=15_000)
+        except AssertionError:
+            pass
+        if block.locator(f'a[href$="{PROMO_URL}"]').count():
+            carousel = block
+            break
+    if carousel is None:
         pytest.skip("На главной нет карусели со ссылкой на подборку Bestseller")
-    carousel = page.locator(CAROUSEL).nth(index)
-
-    # Карусели монтируются лениво и по порядку — прокручиваем все до нужной
-    # (см. test_homepage.py: без прокрутки карточек в DOM нет).
-    for i in range(index + 1):
-        page.locator(CAROUSEL).nth(i).scroll_into_view_if_needed()
     expect(carousel.locator(".product__item").first).to_be_visible(timeout=20_000)
     in_carousel = set(
         carousel.evaluate(
@@ -213,6 +224,12 @@ def test_in_stock_filter_keeps_only_available_bestsellers(promo: Page):
     payload = _status_payload(page, page.locator(IN_STOCK_SWITCH).click, '"inStock"')
     products = _api_products(payload)
 
+    # Пустой ответ проходил все проверки ниже (в том числе 0 == 0 у счётчика),
+    # а в подборке есть бестселлеры со стоком — фильтр, обнуливший выдачу,
+    # обязан краснеть.
+    assert payload["totalCount"] >= 1 and products, (
+        "С фильтром «В наличии» сервер не вернул ни одного бестселлера"
+    )
     assert not _not_bestsellers(products), (
         f"С фильтром «В наличии» в подборке не-бестселлеры: {_not_bestsellers(products)}"
     )
@@ -242,8 +259,22 @@ def test_in_stock_filter_keeps_only_available_bestsellers(promo: Page):
 
 def test_category_filter_keeps_only_bestsellers(promo: Page):
     """Галочка категории: товаров столько, сколько в скобках, после снятия —
-    исходная выдача (общий сценарий из test_brands.py)."""
-    _check_option_filter(promo, "sp-key-categoryId-", "categoryId:")
+    исходная выдача (общий сценарий из test_brands.py), а в ответе сервера
+    на фильтр — только бестселлеры.
+
+    Раньше статус не проверялся вовсе, хотя название теста (и шапка файла)
+    обещают «после любого фильтра только бестселлеры». Ответ ловим на всём
+    сценарии: первый подходящий — это применение фильтра."""
+    payload = _status_payload(
+        promo,
+        lambda: _check_option_filter(promo, "sp-key-categoryId-", "categoryId:"),
+        '"categoryId"',
+    )
+    products = _api_products(payload)
+    assert products, "С фильтром по категории сервер не вернул ни одного товара"
+    assert not _not_bestsellers(products), (
+        f"С фильтром по категории в подборке не-бестселлеры: {_not_bestsellers(products)}"
+    )
 
 
 def test_sort_lowest_price_matches_backend(promo: Page):
@@ -284,6 +315,8 @@ def test_bestseller_in_romanian(promo: Page):
     """`/ro/promo/bestseller` — те же товары, что и на /ru."""
     page = promo
     ru = sorted(p["url"] for p in _page_data(page)["products"])
+    # Без этого `[] == []` проходило, если данные подборки перестали читаться
+    assert ru, "В данных подборки на /ru нет товаров — сравнивать нечего"
 
     page.goto(f"/ro/promo/{STATUS}", wait_until="domcontentloaded", timeout=60_000)
     page.wait_for_function("() => document.documentElement.lang === 'ro'", timeout=20_000)

@@ -87,9 +87,12 @@ def _payload(page: Page) -> dict:
 
 def _open_discounted_product(page: Page) -> dict:
     """Открыть товар со скидкой и вернуть его цены из пейлоада."""
-    for url in _DISCOUNT_CANDIDATES:
+    for i, url in enumerate(_DISCOUNT_CANDIDATES):
         page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-        data = page.evaluate(_PAYLOAD_JS)
+        # Первый кандидат читаем строгим `_payload`: если путь в __NUXT__
+        # сломается, null иначе принимался бы за «нет скидки» у всех товаров,
+        # и весь файл молча уходил бы в skip.
+        data = _payload(page) if i == 0 else page.evaluate(_PAYLOAD_JS)
         if data and data.get("price") and data.get("old_price"):
             return data
 
@@ -168,8 +171,11 @@ def test_discount_amount_equals_price_difference(page: Page):
     _open_discounted_product(page)
 
     amount = page.locator(PDP_DISCOUNT_AMOUNT).first
-    if not amount.count():
-        pytest.skip("На карточке не показывается сумма выгоды")
+    # У товара уже подтверждена старая цена — значит, сумма выгоды обязана быть.
+    # Раньше мгновенный count() уводил тест в skip (и при переименованном классе).
+    expect(amount, "На карточке со скидкой не показана сумма выгоды").to_be_visible(
+        timeout=10_000
+    )
 
     new_price = _bani(page.locator(PDP_NEW_PRICE).first.inner_text())
     old_price = _bani(page.locator(PDP_OLD_PRICE).first.inner_text())

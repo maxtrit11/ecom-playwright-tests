@@ -182,12 +182,16 @@ def _check_option_filter(page: Page, prefix: str, url_key: str) -> None:
 
     Ожидаемое число берём из скобок у самой опции («Портативная акустика (1)»):
     сайт обещает столько товаров — столько и должно прийти."""
+    # Сначала — что опции фильтра вообще есть (ждём, сайдбар догружается).
+    # Раньше «опций нет» и «селектор/префикс сломался» давали одинаковый skip.
+    assert _present(_sidebar(page).locator(f'input[id^="{prefix}"]')), (
+        f"В сайдбаре нет ни одной опции фильтра «{prefix}»"
+    )
     option = _enabled_option_label(page, prefix)
     if option is None:
-        pytest.skip(f"У бренда нет активных опций фильтра «{prefix}»")
+        pytest.skip(f"Все опции фильтра «{prefix}» неактивны (дают 0 товаров)")
     option_id, expected = option
-    if expected is None:
-        pytest.skip(f"У опции {option_id} нет числа товаров в скобках")
+    assert expected is not None, f"У опции {option_id} нет числа товаров в скобках"
 
     initial_count = _found_count(page)
     initial_slugs = sorted(_card_slugs(page))
@@ -439,8 +443,9 @@ def test_in_stock_toggle_shows_only_available(brand_page: Page):
     """«В наличии»: `inStock:true` в URL, ни одной карточки «Нет в наличии»,
     счётчики пересчитаны; выключение возвращает исходную выдачу."""
     page = brand_page
-    if not _present(page.locator(IN_STOCK_SWITCH)):
-        pytest.skip("На странице бренда нет тоггла «В наличии»")
+    # Тоггл — часть стандартного сайдбара; его пропажа — поломка, а не повод
+    # для skip (раньше так и было: сломанный селектор = молчаливый пропуск).
+    expect(page.locator(IN_STOCK_SWITCH)).to_be_visible(timeout=10_000)
 
     initial_count = _found_count(page)
     initial_slugs = sorted(_card_slugs(page))
@@ -526,6 +531,11 @@ def test_price_filter_keeps_products_within_range(brand_page: Page):
     assert count_after < count_before, (
         f"Граница {new_max} MDL отсекает самый дорогой товар, а счётчик не уменьшился: "
         f"{count_before} → {count_after}"
+    )
+    # Самый дешёвый товар (цена = нижней границе) в диапазон попадает всегда,
+    # так что пустая выдача — поломка, а «все в диапазоне» на ней вхолостую.
+    assert count_after >= 1 and prices, (
+        f"Фильтр до {new_max} MDL очистил выдачу, хотя товар за {lo} MDL в неё попадает"
     )
     outside = [p for p in prices if p < lo or p > new_max]
     assert not outside, f"В выдаче товары вне {lo}-{new_max} MDL: {outside} (все: {prices})"

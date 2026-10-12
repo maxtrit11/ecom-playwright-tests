@@ -6,6 +6,8 @@ import time
 import pytest
 from playwright.sync_api import Page, expect
 
+from conftest import wait_until
+
 
 # Товар берём из фикстуры `credit_product` (conftest): кредит доступен не для
 # всего каталога, и зашитый раньше `jbl-partybox-on-the-go-2` его потерял
@@ -23,6 +25,13 @@ COMPANIES = f"{MODAL_CREDIT} .list.company .credit__group"
 CONSENT_ROWS = f"{MODAL_CREDIT} .consent-block__row"
 
 SUCCESS_POPUP = ".modal__credit_success.show"
+
+# Ошибка поля: красная рамка #E53935 на самом input и видимый
+# `span.validation` «Это обязательное поле» в его обёртке `.input__items`.
+# ВНИМАНИЕ: эти `span.validation` лежат в DOM ВСЕГДА, просто скрыты до сабмита
+# (проверено 12.10.2026), поэтому проверять надо видимость, а не наличие.
+ERR_BORDER = "rgb(229, 57, 53)"
+FIELD_VALIDATION = "xpath=ancestor::*[contains(@class,'input__items')][1]//*[contains(@class,'validation')]"
 
 
 def _fill_phone(page: Page, number: str) -> None:
@@ -122,7 +131,6 @@ def test_close_credit_popup_by_overlay_click(open_credit_popup: Page):
             }));
         }"""
     )
-    page.wait_for_timeout(800)
 
     expect(page.locator(MODAL_CREDIT)).not_to_be_visible(timeout=5_000)
 
@@ -160,9 +168,13 @@ def test_select_credit_company_highlights_card(open_credit_popup: Page):
     bg_before = second_label.evaluate("el => getComputedStyle(el).backgroundColor")
 
     second.click()
-    page.wait_for_timeout(800)
-
-    bg_after = second_label.evaluate("el => getComputedStyle(el).backgroundColor")
+    # Ждём смену фона по факту (CSS-переход), а не 800 мс
+    bg_after = wait_until(
+        page,
+        lambda: second_label.evaluate("el => getComputedStyle(el).backgroundColor"),
+        lambda value: value != bg_before,
+        timeout_ms=5_000,
+    )
 
     # Ожидаем bg #F2F6FF = rgb(242, 246, 255) или просто изменение фона
     is_blue_bg = "rgb(242, 246, 255)" in bg_after
@@ -188,27 +200,21 @@ def test_empty_name_shows_error_on_submit(open_credit_popup: Page):
     _fill_phone(page, "79111111")
 
     name_input = page.locator(INPUT_NAME).first
-    border_before = name_input.evaluate("el => getComputedStyle(el).borderColor")
 
     page.locator(BTN_SUBMIT).first.click()
-    page.wait_for_timeout(800)
 
-    border_after = name_input.evaluate("el => getComputedStyle(el).borderColor")
-
-    # Ожидаем красную рамку #E53935 = rgb(229, 57, 53) либо вообще изменение цвета
-    is_red = "rgb(229, 57, 53)" in border_after
-    changed = border_before != border_after
-
-    # Альтернатива — наличие .validation / .error-сообщения рядом с полем
-    has_validation = page.locator(f"{MODAL_CREDIT} .validation:visible").count() > 0 or \
-                     page.locator(
-                         f'{MODAL_CREDIT} [class*="error"]:not([class*="consent"]):visible'
-                     ).count() > 0
-
-    assert is_red or changed or has_validation, (
-        f"Поле Имя не подсветилось ошибкой: border {border_before} → {border_after}, "
-        f"validation={has_validation}"
+    # Ошибка именно у поля «Имя». Прежняя проверка «рамка красная ИЛИ рамка
+    # как-то изменилась ИЛИ в поп-апе видна любая ошибка» проходила за счёт
+    # ошибки ТЕЛЕФОНА (номер 79111111 форма тоже не принимает — проверено
+    # 12.10.2026) и не поймала бы поломку валидации имени. Ждём по факту,
+    # а не 800 мс.
+    expect(name_input, "Поле Имя не подсветилось красной рамкой").to_have_css(
+        "border-color", ERR_BORDER, timeout=5_000
     )
+    expect(
+        name_input.locator(FIELD_VALIDATION).first,
+        "Под полем Имя нет сообщения об ошибке",
+    ).to_be_visible()
 
     # Поп-ап остаётся открытым
     expect(page.locator(MODAL_CREDIT)).to_be_visible()
@@ -224,23 +230,18 @@ def test_empty_phone_shows_error_on_submit(open_credit_popup: Page):
     page.locator(INPUT_NAME).first.fill("Тест Тестов")
 
     tel_input = page.locator(INPUT_TEL).first
-    border_before = tel_input.evaluate("el => getComputedStyle(el).borderColor")
 
     page.locator(BTN_SUBMIT).first.click()
-    page.wait_for_timeout(800)
 
-    border_after = tel_input.evaluate("el => getComputedStyle(el).borderColor")
-    is_red = "rgb(229, 57, 53)" in border_after
-    changed = border_before != border_after
-    has_validation = page.locator(f"{MODAL_CREDIT} .validation:visible").count() > 0 or \
-                     page.locator(
-                         f'{MODAL_CREDIT} [class*="error"]:not([class*="consent"]):visible'
-                     ).count() > 0
-
-    assert is_red or changed or has_validation, (
-        f"Поле Телефон не подсветилось ошибкой: border {border_before} → {border_after}, "
-        f"validation={has_validation}"
+    # Ошибка именно у поля «Телефон» (рамка и сообщение в его обёртке), а не
+    # «любая ошибка в поп-апе» — та засчитывалась бы и от несогласий.
+    expect(tel_input, "Поле Телефон не подсветилось красной рамкой").to_have_css(
+        "border-color", ERR_BORDER, timeout=5_000
     )
+    expect(
+        tel_input.locator(FIELD_VALIDATION).first,
+        "Под полем Телефон нет сообщения об ошибке",
+    ).to_be_visible()
 
     expect(page.locator(MODAL_CREDIT)).to_be_visible()
 

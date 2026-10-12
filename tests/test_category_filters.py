@@ -100,10 +100,14 @@ def _first_group_with_checkboxes(page: Page, min_options: int = 1) -> Locator | 
 
 
 def _wait_after_filter(page: Page) -> None:
-    """Дождаться, пока бекенд пересчитает выдачу и Vue ре-рендерит счётчик."""
+    """Дождаться, пока бекенд ответит на смену фильтра.
+
+    Раньше здесь была ещё пауза 500 мс «на такт Vue». Её не хватало (счётчик
+    отстаёт от сети до ~3 с), а читать число сразу после неё — значит читать
+    прежнее значение. Актуальность счётчика тесты ждут сами, по факту:
+    `_wait_found_count` / `_wait_found_count_changed`.
+    """
     page.wait_for_load_state("networkidle", timeout=15_000)
-    # Vue лениво обновляет счётчик после успешного ответа — даём ему такт
-    page.wait_for_timeout(500)
 
 
 # JS-чтение счётчика «найдено»: тот же селектор, что и у `_found_count`.
@@ -205,7 +209,11 @@ def test_checkbox_filter_applies(page: Page):
     page.wait_for_url(re.compile(r"filters="), timeout=10_000)
     _wait_after_filter(page)
 
-    count_after = _found_count(page)
+    # Счётчик обновляется заметно позже ответа сети. Прочитай мы его сразу —
+    # получили бы прежнее число, и «не вырос» выполнялось бы вхолостую, даже
+    # если фильтр раздувает выдачу. Ждём смену (на этой категории первая
+    # опция её даёт: 31 → 21); если смены нет — читаем после потолка.
+    count_after = _wait_found_count_changed(page, count_before, timeout=10_000)
     assert count_after <= count_before, (
         f"Счётчик после применения фильтра вырос: {count_before} → {count_after}"
     )
@@ -238,9 +246,9 @@ def test_uncheck_returns_counter_to_initial(page: Page):
         "() => location.search.includes('filters=')", timeout=10_000
     )
     _wait_after_filter(page)
-    # Ждём, пока счётчик реально отразит фильтр, а не покажет прежнее число
+    # Ждём, пока счётчик реально отразит фильтр; пауза 800 мс «на state»
+    # после этого была лишней — снятие ниже само ждёт URL и счётчик.
     _wait_found_count_changed(page, initial_count)
-    page.wait_for_timeout(800)  # дать Vue время устаканить state
 
     # Снимаем тот же чекбокс — ищем по стабильному id
     page.locator(f'label[for="{label_id}"]').first.evaluate("el => el.click()")
@@ -271,7 +279,10 @@ def test_in_stock_toggle_filters_results(page: Page):
     toggle.locator("input").first.dispatch_event("click")
     _wait_after_filter(page)
 
-    count_after = _found_count(page)
+    # Не мгновенное чтение: счётчик отстаёт от сети, и прежнее число давало бы
+    # «не выросло» вхолостую. Ждём смену; нет смены (всё в наличии) — читаем
+    # после потолка.
+    count_after = _wait_found_count_changed(page, count_before, timeout=10_000)
     assert count_after <= count_before, (
         f"После «В наличии» выдача выросла: {count_before} → {count_after}"
     )
@@ -371,9 +382,15 @@ def test_multiple_filters_narrow_results(page: Page):
             "После первого фильтра не осталось активных опций в другой группе"
         )
 
+    url_one = page.url
     page.locator(f'label[for="{second_id}"]').first.click()
+    # Второй фильтр должен попасть в URL — без этого читали бы выдачу первого
+    page.wait_for_function("(before) => location.href !== before", arg=url_one,
+                           timeout=10_000)
     _wait_after_filter(page)
-    count_two = _found_count(page)
+    # Счётчик отстаёт от сети; AND двух групп может законно оставить то же
+    # число (1 → 1), поэтому ждём смену недолго и читаем, что есть.
+    count_two = _wait_found_count_changed(page, count_one, timeout=5_000)
 
     assert count_two <= count_one, (
         f"С двумя фильтрами выдача больше, чем с одним: {count_one} → {count_two}"
@@ -538,10 +555,19 @@ def test_price_filter_keeps_prices_within_range(page: Page):
     _commit_price_input(page, inputs.last, str(max_mdl), "max")
 
     prices_after = _visible_prices_bani(page)
-    if not prices_after:
-        pytest.skip(f"В интервал {min_mdl}-{max_mdl} MDL не попал ни один товар")
-
     lo_bani, hi_bani = min_mdl * 100, max_mdl * 100
+
+    # Пустая выдача — повод для skip, только если в интервал и правда никто не
+    # попадает. Раньше skip был безусловным: фильтр, обнуливший выдачу при
+    # подходящих товарах, давал skip вместо падения, а «все в интервале» на
+    # пустом списке истинно вхолостую.
+    in_range_before = [p for p in prices_before if lo_bani <= p <= hi_bani]
+    if not prices_after:
+        assert not in_range_before, (
+            f"Фильтр {min_mdl}-{max_mdl} MDL очистил выдачу, хотя до фильтра в "
+            f"интервал попадали товары: {[p / 100 for p in in_range_before]}"
+        )
+        pytest.skip(f"В интервал {min_mdl}-{max_mdl} MDL не попал ни один товар")
     out_of_range = [p for p in prices_after if p < lo_bani or p > hi_bani]
     assert not out_of_range, (
         f"В выдаче есть товары вне интервала {min_mdl}-{max_mdl} MDL: "

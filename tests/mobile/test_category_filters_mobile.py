@@ -54,12 +54,14 @@ def _wait_after_filter(page: Page) -> None:
     """Дать бекенду пересчитать выдачу. В отличие от десктопного хелпера,
     networkidle здесь не обязателен: на мобильной странице (особенно со 2-й
     страницы пагинации) сеть бывает не затихает за 15 с, а сам факт
-    применения фильтра тесты и так ждут по счётчику/URL."""
+    применения фильтра тесты и так ждут по счётчику/URL.
+
+    Паузы 500 мс «на такт» после этого нет: актуальное число тесты ждут по
+    факту (`_wait_found_count` / `_wait_found_count_changed`)."""
     try:
         page.wait_for_load_state("networkidle", timeout=5_000)
     except Exception:
         pass
-    page.wait_for_timeout(500)
 
 
 def _panel(page: Page) -> Locator:
@@ -126,6 +128,43 @@ def _wait_found_count_changed(page: Page, before: int, timeout: int = 15_000) ->
     return _found_count(page)
 
 
+def _option_badge(page: Page, option_id: str) -> int | None:
+    """Число в скобках у опции («Doar livrare (15)») — сколько товаров даст
+    выдача, если опцию отметить при ТЕКУЩИХ фильтрах (между группами — AND;
+    замер в Pixel 7 12.10.2026: «Doar livrare (15)» → счётчик 32 → 15, а
+    бейджи других групп после этого пересчитываются под новую выдачу)."""
+    item = page.locator(f'{FILTERS_MODAL} {CHECKBOX_ITEM}:has([id="{option_id}"])').first
+    m = re.search(r"\((\d+)\)\s*$", (item.text_content() or "").strip())
+    return int(m.group(1)) if m else None
+
+
+def _option_url_key(option_id: str) -> str:
+    """Ключ опции в `filters=`: `sp-key-38-175` → `38:175`, `sp-key-fb_dm-1` → `fb_dm:1`."""
+    m = re.match(r"^sp-key-(.+)-([^-]+)$", option_id)
+    assert m, f"Неожиданный формат id опции фильтра: {option_id!r}"
+    return f"{m.group(1)}:{m.group(2)}"
+
+
+def _wait_filter_in_url(page: Page, key: str, present: bool = True,
+                        timeout: int = 10_000) -> None:
+    """Дождаться, что `key` появился в `filters=` URL (или исчез при present=False).
+
+    Это доказательство, что фильтр реально применён: счётчик может законно не
+    измениться (опция покрывает всю выдачу), и тогда `после <= до` выполнялось
+    бы и при потерянном тапе. Исключение бросаем намеренно — без ключа в URL
+    фильтр не применён, и тест обязан упасть.
+    """
+    page.wait_for_function(
+        """([key, present]) => {
+            const m = decodeURIComponent(location.search).match(/filters=([^&]*)/);
+            const has = !!m && m[1].includes(key);
+            return has === present;
+        }""",
+        arg=[key, present],
+        timeout=timeout,
+    )
+
+
 def _first_group_with_checkboxes(page: Page, min_options: int = 1) -> Locator | None:
     panel = _panel(page)
     if not _present(panel.locator(CHECKBOX_ITEM), min_options):
@@ -153,6 +192,7 @@ def _apply_first_checkbox(page: Page) -> tuple[str, int, int]:
     # 1 раз из 12, изолированно 0 из 3): опция не отмечается, URL не меняется.
     # Повторяем, только пока опция НЕ отмечена — иначе второй тап снял бы её.
     option = page.locator(f'[id="{option_id}"]')
+    badge = _option_badge(page, option_id)
     for _ in range(3):
         if option.is_checked():
             break
@@ -162,9 +202,21 @@ def _apply_first_checkbox(page: Page) -> tuple[str, int, int]:
             break
         except Exception:
             continue
-    page.wait_for_url(re.compile(r"filters="), timeout=10_000)
+    # Факт применения: ключ опции в URL и отмеченный чекбокс
+    _wait_filter_in_url(page, _option_url_key(option_id))
+    expect(option).to_be_checked()
     _wait_after_filter(page)
-    after = _wait_found_count_changed(page, before)
+
+    # Счётчик ждём до числа из бейджа опции — это точное ожидаемое значение.
+    # Раньше ждали «любой смены» (с проглоченным таймаутом), и при
+    # неприменённом фильтре вызывающие тесты сравнивали 32 <= 32 и зеленели.
+    if badge is not None:
+        after = _wait_found_count(page, badge)
+        assert after == badge, (
+            f"После фильтра «{option_id}» найдено {after}, а опция обещала {badge}"
+        )
+    else:
+        after = _wait_found_count_changed(page, before)
     return option_id, before, after
 
 
@@ -225,7 +277,9 @@ def test_uncheck_returns_counter_to_initial(page: Page):
     option_id, initial, _ = _apply_first_checkbox(page)
 
     page.locator(f'{FILTERS_MODAL} label[for="{option_id}"]').tap()
-    page.wait_for_function("() => !location.search.match(/filters=\\d/)", timeout=10_000)
+    # Ждём исчезновения ИМЕННО этого ключа: прежний шаблон `filters=\d` не
+    # ловил ключи вида `fb_dm:1` и выполнялся ещё до снятия.
+    _wait_filter_in_url(page, _option_url_key(option_id), present=False)
     _wait_after_filter(page)
 
     after = _wait_found_count(page, initial)
@@ -243,9 +297,16 @@ def test_in_stock_toggle_filters_results(page: Page):
     before = _found_count(page)
     # Сам input скрыт — тапаем видимый переключатель, как пользователь.
     toggle.locator(".ui-switch-toggler__switch").tap()
+
+    # Сначала доказываем, что фильтр применён: тоггл включён и `inStock:true`
+    # в URL. Без этого `после <= до` проходило и при потерянном тапе (32 <= 32).
+    expect(toggle.locator("input[type=checkbox]")).to_be_checked(timeout=10_000)
+    _wait_filter_in_url(page, "inStock:true")
     _wait_after_filter(page)
 
-    after = _found_count(page)
+    # Счётчик отстаёт от сети: ждём смену. Если всё в наличии, число законно
+    # не меняется — тогда читаем после потолка (применение доказано выше).
+    after = _wait_found_count_changed(page, before, timeout=10_000)
     assert after <= before, f"После «В наличии» выдача выросла: {before} → {after}"
 
 
@@ -293,11 +354,26 @@ def test_multiple_filters_narrow_results(page: Page):
     if not second_id:
         pytest.skip("После первого фильтра не осталось активных опций в другой группе")
 
-    url_before = page.url
+    badge_two = _option_badge(page, second_id)
     page.locator(f'{FILTERS_MODAL} label[for="{second_id}"]').tap()
-    page.wait_for_function("(u) => location.href !== u", arg=url_before, timeout=10_000)
+
+    # Факт применения второго фильтра: он отмечен, и в URL оба ключа.
+    # Раньше ждали лишь «URL сменился» и читали счётчик сразу — при
+    # неприменённом втором фильтре `count_one <= count_one` было истинно.
+    expect(page.locator(f'[id="{second_id}"]')).to_be_checked(timeout=10_000)
+    _wait_filter_in_url(page, _option_url_key(second_id))
+    _wait_filter_in_url(page, _option_url_key(first_id))
     _wait_after_filter(page)
-    count_two = _found_count(page)
+
+    # Бейдж второй опции уже посчитан под первый фильтр — это и есть
+    # ожидаемая выдача по AND двух групп.
+    if badge_two is not None:
+        count_two = _wait_found_count(page, badge_two)
+        assert count_two == badge_two, (
+            f"С двумя фильтрами найдено {count_two}, а опция обещала {badge_two}"
+        )
+    else:
+        count_two = _wait_found_count_changed(page, count_one, timeout=5_000)
 
     assert count_two <= count_one, (
         f"С двумя фильтрами выдача больше, чем с одним: {count_one} → {count_two}"
@@ -328,7 +404,11 @@ def test_price_filter_narrows_results(page: Page):
     # Закрываем поп-ап на «X» и смотрим уже на саму страницу: товары дороже
     # нового максимума остаться не должны.
     _close_filters_by_x(page)
-    too_expensive = [p for p in _visible_prices_bani(page) if p > int(new_max) * 100]
+    prices = _visible_prices_bani(page)
+    # «Нет дороже максимума» истинно и на пустом списке — сначала убеждаемся,
+    # что есть что проверять (половина максимума категории оставляет товары).
+    assert prices, f"После фильтра до {new_max} MDL на странице нет ни одной цены"
+    too_expensive = [p for p in prices if p > int(new_max) * 100]
     assert not too_expensive, (
         f"После закрытия фильтра на странице товары дороже {new_max} MDL: "
         f"{[p / 100 for p in too_expensive]}"
