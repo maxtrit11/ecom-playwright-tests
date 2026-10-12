@@ -5,8 +5,8 @@
 Отличается только обвязка:
   * до формы добираемся через мобильную иконку корзины (фикстура
     `cart_with_product` из мобильного файла корзины);
-  * форма на весь экран, итог, согласие и кнопки «Продолжить покупки» /
-    «Оформить заказ» прилипли к низу экрана;
+  * форма на весь экран, итог, согласие и кнопка «Оформить заказ»
+    прилипли к низу экрана;
   * в шапке формы есть стрелка «←» (`#step-back-button`) — шаг назад в корзину.
 
 Поэтому десктопные тесты формы НЕ переписаны, а импортированы целиком: pytest
@@ -29,7 +29,6 @@ from test_checkout_block import (  # noqa: F401 — тесты и autouse-фик
     SIDEBAR_CHECKOUT,
     only_popup_cart_view,
     test_close_checkout_via_x,
-    test_close_checkout_via_continue_shopping,
     test_dont_call_me_reveals_messenger_field,
     test_terms_link_opens_in_new_tab,
     test_select_payment_method,

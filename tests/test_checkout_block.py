@@ -7,8 +7,8 @@
 - Закрытие:
     * Х: `.modal__cart button.btn__close[title="Закрыть корзину"]`
     * Клик по overlay-области `.modal__cart.show` (мимо сайдбара)
-    * Кнопка «Продолжить покупки»: `button.btn__secondary.cart`
-      с текстом «Продолжить покупки» (отдельно от такой же кнопки в коше)
+    * Кнопки «Продолжить покупки» в форме больше нет (убрана разработчиком
+      10.2026) — Кейс 222 удалён вместе с ней
 - Личные данные:
     * Полное имя: input[placeholder="Введи имя и фамилию"]
     * Телефон: единственный input[type="tel"] в форме (id плавает: был
@@ -81,7 +81,6 @@ SIDEBAR_FIXED = ".cart__sidebar--fixed"           # липкий summary, где
 # чекаут. Старый селектор `.modal__cart button.btn__close` ловил перекрытый
 # крестик корзины → click intercepted (30s timeout).
 BTN_CHECKOUT_X = '.modal__checkout button.btn-close.btn__close'
-BTN_CONTINUE_SHOPPING = f"{SIDEBAR_FIXED} button.btn__secondary"
 
 # Личные данные
 INPUT_NAME = f'{CHECKOUT_FORM} input[placeholder="Введи имя и фамилию"]'
@@ -380,25 +379,6 @@ def test_close_checkout_by_clicking_outside(checkout: Page):
     # `.modal__checkout` — это overlay на полный экран поверх `.modal__cart.show`.
     # Кликаем в левый верхний угол, мимо правого сайдбара формы.
     page.locator(CHECKOUT_OVERLAY).click(position={"x": 50, "y": 50})
-    page.wait_for_timeout(500)
-
-    expect(page.locator(CART_MODAL_SHOWN)).to_have_count(0, timeout=5_000)
-
-
-# ===========================================================================
-# Кейс 222: Закрыть через «Продолжить покупки»
-# ===========================================================================
-def test_close_checkout_via_continue_shopping(checkout: Page):
-    page = checkout
-
-    cont = (
-        page.locator(BTN_CONTINUE_SHOPPING)
-        .filter(has_text=re.compile(r"Продолжить.*покупк", re.IGNORECASE))
-        .first
-    )
-    expect(cont).to_be_visible()
-    cont.scroll_into_view_if_needed()
-    cont.click()
     page.wait_for_timeout(500)
 
     expect(page.locator(CART_MODAL_SHOWN)).to_have_count(0, timeout=5_000)
