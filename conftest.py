@@ -17,7 +17,7 @@ import pytest
 # ---------------------------------------------------------------------------
 _MOBILE_DIR = Path(__file__).parent / "tests" / "mobile"
 # Прод (tests/prod) — так же только по явному пути: ночная суита и локальный
-# `pytest` ходят на stage, на прод — лишь отдельный job «только чтение».
+# `pytest` ходят на stage; прод проверяется только вручную (`pytest tests/prod`).
 _PROD_DIR = Path(__file__).parent / "tests" / "prod"
 _EXPLICIT_ONLY_DIRS = (_MOBILE_DIR, _PROD_DIR)
 
