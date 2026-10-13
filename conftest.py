@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from admin_orders import admin_login, read_order
+
 
 # ---------------------------------------------------------------------------
 # Мобильная версия — отдельный прогон.
@@ -655,6 +657,34 @@ def load_users() -> tuple[dict, str | None]:
     if _has_placeholders(users):
         return users, f"в users.json остались значения {_PLACEHOLDER} — {_SETUP_HINT}"
     return users, None
+
+
+@pytest.fixture(scope="session")
+def admin_order(browser):
+    """Читалка заказа из админки stage: `admin_order(226342)` → dict (admin_orders.py).
+
+    Отдельный контекст браузера на всю сессию: вход в админку один раз, и
+    страница сайта в тесте его не видит. Нет учётки adminUser — скип: без
+    админки сверять не с чем, а заказ на сайте тест уже проверил.
+    """
+    users, reason = load_users()
+    admin = users.get("adminUser") or {}
+    if reason or not admin.get("username"):
+        pytest.skip(reason or f"в users.json нет adminUser — {_SETUP_HINT}")
+
+    ctx = browser.new_context(ignore_https_errors=True)
+    page = ctx.new_page()
+    logged_in = False
+
+    def read(order_id):
+        nonlocal logged_in
+        if not logged_in:
+            admin_login(page, admin)
+            logged_in = True
+        return read_order(page, order_id)
+
+    yield read
+    ctx.close()
 
 
 # ---------------------------------------------------------------------------

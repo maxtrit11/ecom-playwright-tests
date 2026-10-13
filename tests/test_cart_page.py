@@ -39,6 +39,7 @@ import pytest
 from playwright.sync_api import Locator, Page, expect
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
+from admin_orders import assert_order_matches
 from conftest import CART_VIEW_JS, CART_VIEW_PAGE, wait_until
 
 CART_URL = "/ru/cart"
@@ -471,9 +472,11 @@ def test_delivery_type_tabs_switch(cart_with_product: Page):
 # тесты могут остаться без стока. Ровно так же сделано для Вида 1
 # (test_checkout_block.py::test_place_order_happy_path).
 # ===========================================================================
-def test_place_order_happy_path(cart_with_product: Page):
-    """Заказ наличными с доставкой оформляется, корзина после этого пуста."""
+def test_place_order_happy_path(cart_with_product: Page, admin_order):
+    """Заказ наличными с доставкой оформляется, корзина после этого пуста,
+    а в админке лежит ровно то, что покупатель ввёл и видел в итогах."""
     page = cart_with_product
+    product_name = page.locator(ROW_TITLE).first.inner_text().strip()
 
     page.locator(INPUT_NAME).first.fill("QA Autotest")
 
@@ -481,9 +484,11 @@ def test_place_order_happy_path(cart_with_product: Page):
     # мимо маски, и поле остаётся пустым — уже проверено на предзаказе.
     phone = page.locator(INPUT_PHONE).first
     phone.click()
-    phone.press_sequentially("79" + str(int(time.time() * 1000))[-6:], delay=60)
+    unique_phone = "79" + str(int(time.time() * 1000))[-6:]
+    phone.press_sequentially(unique_phone, delay=60)
 
-    page.locator(INPUT_EMAIL).first.fill(f"qa+{int(time.time())}@example.com")
+    email = f"qa+{int(time.time())}@example.com"
+    page.locator(INPUT_EMAIL).first.fill(email)
 
     # Сектор — ОБЯЗАТЕЛЕН. Без него кнопка остаётся активной, но клик молча
     # ничего не делает: запрос не уходит вообще, поле лишь подсвечивается
@@ -502,8 +507,9 @@ def test_place_order_happy_path(cart_with_product: Page):
         expect(sector.locator(".vs__selected")).to_have_count(1, timeout=15_000)
 
     street = page.locator(INPUT_STREET)
+    street_text = "ул. Тестовая, д. 1, кв. 1"
     if _appears(street):
-        street.first.fill("ул. Тестовая, д. 1, кв. 1")
+        street.first.fill(street_text)
 
     # Наличные и доставка по Кишинёву выбраны по умолчанию — подстраховываемся.
     cash = page.locator(ALL_TABS).filter(has_text=re.compile("наличны", re.I)).first
@@ -525,6 +531,15 @@ def test_place_order_happy_path(cart_with_product: Page):
             for i in range(min(invalid.count(), 5))
         )
     )
+
+    # Итоги, которые покупатель видит перед отправкой, — эталон для админки.
+    # «Итого» здесь — товары ДО скидки, как «Стоимость товаров» в Виде 1.
+    summary = {
+        "goods": _footer_amount(page, "Итого"),
+        "discount": _footer_amount(page, "Скидка") or 0,
+        "delivery": _footer_amount(page, "Доставка") or 0,
+        "total": _footer_amount(page, "Общая сумма"),
+    }
 
     submit = page.locator(BTN_PLACE_ORDER).first
     submit.scroll_into_view_if_needed()
@@ -552,8 +567,21 @@ def test_place_order_happy_path(cart_with_product: Page):
                                 "причина не в валидации.")
         ) from None
     expect(success).to_contain_text(re.compile(r"успешно оформлен", re.I))
-    assert re.search(r"\d{4,}", success.inner_text()), (
-        f"В подтверждении нет номера заказа: {success.inner_text()!r}"
-    )
+    number = re.search(r"\d{4,}", success.inner_text())
+    assert number, f"В подтверждении нет номера заказа: {success.inner_text()!r}"
 
     expect(page.locator(ROW)).to_have_count(0, timeout=20_000)
+
+    # Заказ в админке (номер из попапа = ID). Доставка и регион — значения по
+    # умолчанию формы Вида 2; так их записали все прошлые ночные заказы.
+    assert_order_matches(admin_order(number.group()), {
+        "name": "QA Autotest",
+        "phone": unique_phone,
+        "email": email,
+        "pay_method": "Наличн",
+        "delivery_type": "Доставка по адресу",
+        "region": "Кишинёв",
+        "address": street_text,
+        "product": product_name,
+        "summary": summary,
+    })

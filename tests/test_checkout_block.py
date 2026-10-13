@@ -44,6 +44,7 @@ import time
 import pytest
 from playwright.sync_api import Page, expect
 
+from admin_orders import assert_order_matches
 from conftest import CART_VIEW_POPUP, wait_until
 from test_cart_block import _click_add_to_cart, _click_until
 
@@ -850,8 +851,11 @@ def test_delivery_cost_updates_in_summary(checkout: Page):
 # валидации — этой кнопки не будет, если сток упадёт до 0). Не переносите его
 # выше валидационных тестов.
 # ===========================================================================
-def test_place_order_happy_path(checkout: Page):
+def test_place_order_happy_path(checkout: Page, admin_order):
     page = checkout
+    # Название товара берём с карточки, под которой открыт чекаут, — им же
+    # потом сверяем строку заказа в админке.
+    product_name = page.locator("h1").first.inner_text().strip()
 
     # 0. Реальный сток. Фикстура `_has_stock` отсеивает товары с нулевым остатком,
     #    но остаток на stage волатилен и мог обнулиться между резолвом и сабмитом
@@ -876,7 +880,8 @@ def test_place_order_happy_path(checkout: Page):
     page.wait_for_timeout(300)
 
     # 3. E-mail
-    page.locator(INPUT_EMAIL).fill(f"qa+{int(time.time())}@example.com")
+    email = f"qa+{int(time.time())}@example.com"
+    page.locator(INPUT_EMAIL).fill(email)
 
     # 4-6. Доставка по адресу + тип «Кишинёв» (регион проставляется сам) + сектор.
     #      На stage «Кишинёв» — это radio типа доставки, а не пункт списка региона
@@ -886,7 +891,8 @@ def test_place_order_happy_path(checkout: Page):
         pytest.skip("Тип доставки «Кишинёв» недоступен для выбранного товара")
 
     # 7. Адрес
-    page.locator(INPUT_STREET).fill("ул. Тестовая, д. 1, кв. 1")
+    street = "ул. Тестовая, д. 1, кв. 1"
+    page.locator(INPUT_STREET).fill(street)
 
     # 8. Оплата — Наличными (обычно уже выбрана по умолчанию)
     if not page.locator(RADIO_PAY_CASH).is_checked():
@@ -895,6 +901,9 @@ def test_place_order_happy_path(checkout: Page):
 
     # 9. Согласие с условиями (`check()` сам убеждается, что галочка стоит)
     page.locator(CHK_TERMS).check()
+
+    # Что сайт обещает покупателю прямо перед отправкой — эталон для админки.
+    summary = _settled_summary(page)
 
     # 10. Сабмит. Заодно слушаем сам запрос создания заказа: без этого
     #     «подтверждения нет» неразличимо в трёх разных случаях — форма не
@@ -940,10 +949,23 @@ def test_place_order_happy_path(checkout: Page):
                if order_calls else "POST на создание заказа вообще не ушёл.")
         ) from None
 
-    assert re.search(r"\d{4,}", success.inner_text()), (
-        f"В подтверждении нет номера заказа: {success.inner_text()!r}"
-    )
+    number = re.search(r"\d{4,}", success.inner_text())
+    assert number, f"В подтверждении нет номера заказа: {success.inner_text()!r}"
 
     # И только потом — что корзина действительно опустела.
     expect(page.locator(CART_MODAL_SHOWN)).to_have_count(0, timeout=30_000)
     expect(page.locator(CART_PRODUCT)).to_have_count(0, timeout=15_000)
+
+    # 11. Заказ в админке — то, что реально сохранилось (номер из попапа = ID).
+    order = admin_order(number.group())
+    assert_order_matches(order, {
+        "name": "QA Autotest",
+        "phone": unique_phone,
+        "email": email,
+        "pay_method": "Наличн",
+        "delivery_type": "Доставка по адресу",
+        "region": "Кишинёв",
+        "address": street,
+        "product": product_name,
+        "summary": summary,
+    })
