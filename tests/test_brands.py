@@ -182,6 +182,19 @@ def _check_option_filter(page: Page, prefix: str, url_key: str) -> None:
 
     Ожидаемое число берём из скобок у самой опции («Портативная акустика (1)»):
     сайт обещает столько товаров — столько и должно прийти."""
+    # Группы нет в данных бэкенда — у товаров бренда нет такой характеристики,
+    # это не баг (решение юзера 15.10.2026: «Способ получения» пропал со
+    # стенда). Ключ в данных = префикс без `sp-key-` и хвостового дефиса.
+    filter_key = prefix.removeprefix("sp-key-").rstrip("-")
+    in_data = page.evaluate(
+        """(key) => {
+            const f = window.__NUXT__?.state?.filters?.filters || [];
+            return f.some(g => [g.sp_key, g.filterId, g.id].map(String).includes(key));
+        }""",
+        filter_key,
+    )
+    if not in_data:
+        pytest.skip(f"Бэкенд не отдаёт группу фильтра «{filter_key}» для бренда")
     # Сначала — что опции фильтра вообще есть (ждём, сайдбар догружается).
     # Раньше «опций нет» и «селектор/префикс сломался» давали одинаковый skip.
     assert _present(_sidebar(page).locator(f'input[id^="{prefix}"]')), (

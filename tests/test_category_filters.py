@@ -342,13 +342,25 @@ def test_multiple_filters_narrow_results(page: Page):
     if group is None:
         pytest.skip("На этой категории нет чекбокс-фильтров")
 
-    first_id = group.locator(CHECKBOX_LABEL).first.get_attribute("for")
+    first_label = group.locator(CHECKBOX_LABEL).first
+    first_id = first_label.get_attribute("for")
     assert first_id, "У label чекбокса не оказалось for-атрибута"
+    # Опция обещает столько товаров — «20 Hz - 20 kHz (1)»
+    promised = re.search(r"\((\d+)\)\s*$", first_label.text_content() or "")
+    count_initial = _found_count(page)
 
     page.locator(f'label[for="{first_id}"]').first.click()
     page.wait_for_url(re.compile(r"filters="), timeout=10_000)
     _wait_after_filter(page)
-    count_one = _found_count(page)
+    # Вторую опцию выбираем только из ОБНОВЛЁННОГО сайдбара. Счётчик и опции
+    # приходят одним ответом, а Vue отрисовывает их через ~3 с после сети.
+    # 15.10.2026 тест брал опцию из сайдбара ДО первого фильтра: после
+    # «20 Hz - 20 kHz (1)» группы «Drivere» уже нет, но в старом DOM была
+    # активная «32 mm (7)» — AND дал 0 товаров, сайдбар пропал вместе с выдачей.
+    if promised:
+        count_one = _wait_found_count(page, int(promised.group(1)))
+    else:
+        count_one = _wait_found_count_changed(page, count_initial)
 
     # Ищем вторую опцию, которая осталась активной (input не disabled),
     # отличается от первой И ЛЕЖИТ В ДРУГОЙ ГРУППЕ.
@@ -388,6 +400,12 @@ def test_multiple_filters_narrow_results(page: Page):
     page.wait_for_function("(before) => location.href !== before", arg=url_one,
                            timeout=10_000)
     _wait_after_filter(page)
+    # При 0 товаров страница рисует только плитки подкатегорий — без сайдбара
+    # и счётчика. Опция была активной, значит бэкенд обещал >0: падаем с
+    # понятным сообщением, а не по таймауту чтения счётчика.
+    assert _present(_sidebar(page)), (
+        f"После второго фильтра выдача пустая (сайдбар пропал): {page.url}"
+    )
     # Счётчик отстаёт от сети; AND двух групп может законно оставить то же
     # число (1 → 1), поэтому ждём смену недолго и читаем, что есть.
     count_two = _wait_found_count_changed(page, count_one, timeout=5_000)
