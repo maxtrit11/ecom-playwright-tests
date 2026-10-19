@@ -26,6 +26,8 @@ const ORDER = ["home", "category", "product", "search"];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+// Время по Кишинёву: Cloudflare живёт в UTC.
+const hhmm = (ms) => new Date(ms).toLocaleTimeString("ru-RU", { timeZone: "Europe/Chisinau", hour: "2-digit", minute: "2-digit" });
 const span = (ms) => {
   const m = Math.floor(ms / 60000);
   return m < 60 ? `${m} мин` : `${Math.floor(m / 60)} ч ${String(m % 60).padStart(2, "0")} мин`;
@@ -100,7 +102,8 @@ function messages(results, state, now) {
     const prev = state[key];
     if (r.ok) {
       if (prev) {
-        b.fixed.push(`• ${TITLES[r.kind]} — снова работает (длилось ~${span(now - prev.since)})`);
+        // Известно только, что сбой был на прошлых проверках (раз в 5 мин) и его нет на этой.
+        b.fixed.push(`• ${TITLES[r.kind]} — снова работает\n  не работало на проверках с ${hhmm(prev.since)}, на проверке в ${hhmm(now)} уже в норме`);
         delete state[key];
         changed = true;
       }
@@ -113,7 +116,7 @@ function messages(results, state, now) {
       changed = true;
     } else if (now - prev.notified >= REMIND_MS) {
       prev.notified = now;
-      b.still.push(`${line}\n  <i>уже ${span(now - prev.since)}</i>`);
+      b.still.push(`${line}\n  <i>держится с ${hhmm(prev.since)} (~${span(now - prev.since)})</i>`);
       changed = true;
     }
   }

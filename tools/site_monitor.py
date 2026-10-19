@@ -148,6 +148,10 @@ def _sec(ms: float) -> str:
     return f"{ms / 1000:.1f} с"
 
 
+def _hhmm(ts: float) -> str:
+    return datetime.fromtimestamp(ts).strftime("%H:%M")
+
+
 def _span(seconds: float) -> str:
     minutes = int(seconds // 60)
     return f"{minutes} мин" if minutes < 60 else f"{minutes // 60} ч {minutes % 60:02d} мин"
@@ -326,8 +330,13 @@ def _messages(results: list[dict], state: dict, now: float, mode: str, remind_s:
         link = f"https://{r['site']}{r['path']}"
         if not problem:
             if prev:
-                what = "снова открывается быстро" if prev.get("level") in ("slow", "critical") else "снова работает"
-                bucket["fixed"].append(f"• {title} — {what} (длилось ~{_span(now - prev['since'])})")
+                slow = prev.get("level") in ("slow", "critical")
+                what = "снова открывается быстро" if slow else "снова работает"
+                # Проверки идут раз в 5/15 мин: известно только, что проблема была на прошлых проверках
+                # и её нет на этой — сама проблема могла длиться меньше.
+                was = "медленно" if slow else "не работало"
+                bucket["fixed"].append(f"• {title} — {what}\n  {was} на проверках с {_hhmm(prev['since'])}, "
+                                       f"на проверке в {_hhmm(now)} уже в норме")
                 state.pop(key)
             continue
         line = f"• <b>{title}</b>: {e(problem).replace(chr(10), chr(10) + "  ")}\n  {e(link)}"
@@ -336,7 +345,7 @@ def _messages(results: list[dict], state: dict, now: float, mode: str, remind_s:
             bucket["new"].append(line)
         elif now - prev["notified"] >= remind_s:
             prev["notified"] = now
-            bucket["still"].append(line + f"\n  <i>уже {_span(now - prev['since'])}</i>")
+            bucket["still"].append(line + f"\n  <i>держится с {_hhmm(prev['since'])} (~{_span(now - prev['since'])})</i>")
 
     out: dict[str, list[str]] = {}
     for (group, site), b in per_site.items():
