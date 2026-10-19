@@ -54,7 +54,15 @@ _junit/
 _report_extract/
 _report_main.html
 report.html
+report-perf.html
+report-perf-*.html
+perf-report.html
+perf-report-*.html
+perf-summary*.html
+perf-summary*.pdf
 pytest-html-report*.zip
+# Замеры скорости (tests/perf) — по файлу на прогон; база живёт в tests/perf/baseline.json
+perf-results/
 
 # --- Локальные выгрузки документации и тест-кейсов ---
 _brd_*.txt
@@ -116,3 +124,10 @@ str
 testiny-*.csv
 typeof
 v
+
+# Состояние пинга прода (tools/uptime_check.py) — локальное, не в git
+tools/.uptime_state.json
+
+# --- Мониторинг продов: состояние и журнал (tools/site_monitor.py) ---
+monitor-data/
+.wrangler/

@@ -1,0 +1,32 @@
+{
+  "_doc": "Мониторинг продов: python tools/site_monitor.py http|speed|summary. Пороги — для компьютера на нормальной сети, время до появления главного содержимого (LCP, без рекламных поп-апов), медиана 3 открытий.",
+  "thresholds_ms": {"home": 3000, "category": 3000, "product": 3000, "search": 5000},
+  "critical_ms": 10000,
+  "remind_every_min": 120,
+  "http_on_pc": ["alo.md"],
+  "_http_on_pc": "коды ответа (500/502…) каждые 5 мин проверяет Cloudflare (monitor-cloudflare/), 24/7. Сайты из этого списка — компьютер QA: alo.md отвечает 403 на запросы Cloudflare (из США). SSL и скорость — всегда компьютер",
+  "groups": {
+    "ECOM": {
+      "thread_id": null,
+      "sites": {
+        "alo.md":           {"home": "/", "category": "/ru/smartfony",       "search": "/ru/search?query=samsung"},
+        "luminaled.md":     {"home": "/", "category": "/ro/bec-led-seria-a", "search": "/ro/search?query=lustra"},
+        "beautyfactory.md": {"home": "/", "category": "/ro/machiaj",         "search": "/ro/search?query=spf"},
+        "alcohall.md":      {"home": "/", "category": "/ro/vin",             "search": "/ro/search?query=vin"}
+      }
+    },
+    "FARMACIE": {
+      "thread_id": null,
+      "sites": {
+        "farmacie.md": {"home": "/", "category": "/ro/vitamine-si-substante-minerale", "search": "/ro/search?query=vitamina"}
+      }
+    },
+    "Novaporta": {
+      "thread_id": null,
+      "_why": "поиска на сайте нет — /ro/search отдаёт 404",
+      "sites": {
+        "novaporta.md": {"home": "/", "category": "/ro/usi-de-interior"}
+      }
+    }
+  }
+}
