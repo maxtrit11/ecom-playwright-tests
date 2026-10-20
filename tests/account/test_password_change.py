@@ -28,9 +28,16 @@ pytestmark = [
 
 EMAIL = USERS["loginUser"]["email"]
 PASSWORD = USERS["loginUser"]["password"]
-# Временный пароль теста успешной смены. Отличается от рабочего и не совпадает
-# ни с одним значением в users.json — чтобы «случайно подошёл» было невозможно.
-TEMP_PASSWORD = "QaAutotest2026!"
+# Временный пароль теста успешной смены. Отличается от рабочего, чтобы
+# «случайно подошёл» было невозможно. Лежит в users.json (loginUser.tempPassword),
+# а не в коде: репозиторий публичный, а пока идёт тест — и если прогон оборвётся
+# между двумя сменами — учётка пускает именно по нему. Нет значения — тест
+# успешной смены скипается, остальные тесты кабинета он не нужен.
+TEMP_PASSWORD = USERS["loginUser"].get("tempPassword", "")
+_NO_TEMP_PASSWORD = (
+    "в users.json нет loginUser.tempPassword — временного пароля для теста "
+    "успешной смены (в CI — в секрете USERS_JSON)"
+)
 
 FORM = ".contact-information__form"
 BTN_CHANGE_PASSWORD = "Изменить пароль"
@@ -80,7 +87,8 @@ def account(page: Page):
     """Вход в кабинет + страница «Личные данные»."""
     assert login_via_popup(page, EMAIL, PASSWORD), (
         f"Не удалось войти в кабинет под {EMAIL}. Если предыдущий прогон упал "
-        f"посреди смены пароля — проверь, не остался ли пароль {TEMP_PASSWORD}"
+        f"посреди смены пароля — проверь, не остался ли временный пароль "
+        f"(loginUser.tempPassword в users.json)"
     )
     open_personal_data(page)
     return page
@@ -95,6 +103,8 @@ def restore_password(page: Page):
     суита кабинета. Поэтому после теста заходим тем паролем, который сработает,
     и, если это временный, меняем обратно.
     """
+    if not TEMP_PASSWORD:
+        pytest.skip(_NO_TEMP_PASSWORD)
     yield
 
     # Тест заканчивается авторизованным, а `login_via_popup` кликает по кнопке
@@ -108,7 +118,7 @@ def restore_password(page: Page):
     logout(page)
     assert login_via_popup(page, EMAIL, TEMP_PASSWORD), (
         f"Учётка {EMAIL} не пускает ни по основному, ни по временному паролю — "
-        f"восстанови пароль вручную на {PASSWORD}"
+        f"восстанови вручную пароль из users.json (loginUser.password)"
     )
     open_personal_data(page)
     reveal_password_fields(page)

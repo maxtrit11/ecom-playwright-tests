@@ -33,7 +33,6 @@ from account.test_password_change import (
     BTN_CHANGE_PASSWORD,
     EMAIL,
     PASSWORD,
-    TEMP_PASSWORD,
     _USERS_SKIP,
     open_personal_data,
     password_row,
@@ -64,7 +63,8 @@ def account(page: Page):
     """Вход через нижний бар + страница «Личные данные»."""
     assert login_via_bar(page, EMAIL, PASSWORD), (
         f"Не удалось войти в кабинет под {EMAIL}. Если предыдущий прогон упал "
-        f"посреди смены пароля — проверь, не остался ли пароль {TEMP_PASSWORD}"
+        f"посреди смены пароля — проверь, не остался ли временный пароль "
+        f"(loginUser.tempPassword в users.json)"
     )
     open_personal_data(page)
     return page

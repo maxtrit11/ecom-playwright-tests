@@ -6,7 +6,8 @@
   },
   "loginUser": {
     "email": "user@example.com",
-    "password": "REPLACE_ME"
+    "password": "REPLACE_ME",
+    "tempPassword": "REPLACE_ME"
   },
   "orderUser": {
     "name": "Test User",
