@@ -414,8 +414,10 @@ def test_open_credit_popup(page: Page, credit_product: str):
     # Заголовок «Купить в кредит»
     expect(modal.get_by_text("Купить в кредит").first).to_be_visible()
 
-    # Карточка товара внутри попапа — название и цена
-    expect(modal.locator(":text-matches('JBL', 'i')").first).to_be_visible()
+    # Карточка товара внутри попапа — название того же товара, что в h1.
+    # Раньше искали «JBL», но фикстура может дать и Harman Kardon (21.10.2026).
+    product_name = page.locator(H1).first.inner_text().strip()
+    expect(modal.locator(".product__name").first).to_have_text(product_name)
 
     # Блок «Выбери компанию кредитования» с карточками
     expect(modal.get_by_text(re.compile(r"Выбери|компани", re.IGNORECASE)).first).to_be_visible()

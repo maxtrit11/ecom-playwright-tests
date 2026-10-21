@@ -42,9 +42,13 @@ from playwright.sync_api import Page, expect
 
 # Товары со скидкой: нужны, чтобы проверки старой цены и процента были
 # осмысленными, а не скипались. Если ни один не подошёл — добираем с категории.
+# Сток обязателен: без него витрина прячет цены и показывает «Предзаказ», хотя
+# price/old_price в пейлоаде остаются. 21.10.2026 у jbl-charge-6-purple сток
+# стал 0, и все четыре теста ждали на нём `.price.new__price`, которого нет.
 _DISCOUNT_CANDIDATES = [
-    "/ru/product/jbl-charge-6-purple",
+    "/ru/product/harman-kardon-onyx-studio-9-grey",
     "/ru/product/jbl-jbl-partybox-710",
+    "/ru/product/jbl-charge-6-purple",
 ]
 _CATEGORY_FALLBACK = "/ru/acustica-portabila"
 
@@ -60,7 +64,7 @@ PDP_DISCOUNT_PERCENT = ".discount"
 _PAYLOAD_JS = """() => {
   const p = window.__NUXT__?.state?.product?.product;
   if (!p) return null;
-  return {price: p.price, old_price: p.old_price, discount: p.discount, is_sale: p.is_sale};
+  return {price: p.price, old_price: p.old_price, discount: p.discount, is_sale: p.is_sale, stock: p.stock};
 }"""
 
 _AMOUNT_RE = re.compile(r"(\d[\d\s ]*(?:[.,]\d{1,2})?)")
@@ -85,6 +89,15 @@ def _payload(page: Page) -> dict:
     return data
 
 
+def _is_discounted_in_stock(data: dict | None) -> bool:
+    return bool(
+        data
+        and data.get("price")
+        and data.get("old_price")
+        and int(data.get("stock") or 0) > 0
+    )
+
+
 def _open_discounted_product(page: Page) -> dict:
     """Открыть товар со скидкой и вернуть его цены из пейлоада."""
     for i, url in enumerate(_DISCOUNT_CANDIDATES):
@@ -93,7 +106,7 @@ def _open_discounted_product(page: Page) -> dict:
         # сломается, null иначе принимался бы за «нет скидки» у всех товаров,
         # и весь файл молча уходил бы в skip.
         data = _payload(page) if i == 0 else page.evaluate(_PAYLOAD_JS)
-        if data and data.get("price") and data.get("old_price"):
+        if _is_discounted_in_stock(data):
             return data
 
     # Кандидаты не подошли — ищем товар со скидкой в категории.
@@ -107,7 +120,7 @@ def _open_discounted_product(page: Page) -> dict:
     for href in hrefs:
         page.goto(href, wait_until="domcontentloaded", timeout=60_000)
         data = page.evaluate(_PAYLOAD_JS)
-        if data and data.get("price") and data.get("old_price"):
+        if _is_discounted_in_stock(data):
             return data
 
     pytest.skip("На стенде не нашли товара со скидкой — сверять старую цену не с чем")

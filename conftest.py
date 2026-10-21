@@ -422,16 +422,23 @@ def in_stock_product(in_stock_products) -> str:
 # Отсюда тот же приём, что и со стоком: искать товар по данным, а не хардкодить.
 # ---------------------------------------------------------------------------
 _CREDIT_CANDIDATES = [
-    # Подтверждён вручную 2026-08-03 — проверяем первым, чтобы фикстура не
-    # перебирала остальных кандидатов и категории.
-    "/ru/product/jbl-charge-6-purple",
+    # Подтверждён вручную 2026-10-21 (сток 7, попап кредита открывается) —
+    # проверяем первым, чтобы фикстура не перебирала остальных кандидатов.
     "/ru/product/harman-kardon-onyx-studio-9-grey",
     "/ru/product/harman-kardon-onyx-studio-9-black",
     "/ru/product/jbl-boombox-4-black",
+    "/ru/product/jbl-charge-6-purple",
 ]
 _CREDIT_CATEGORY_FALLBACKS = ["/ru/acustica-portabila", "/ru/casti", "/ru/catalog"]
 
-_PDP_CREDIT_JS = "() => window.__NUXT__?.state?.product?.product?.credit?.has === true"
+# Сток проверяем и здесь: при stock 0 `credit.has` остаётся true, но кнопка
+# `button.btn__credit` рисуется disabled (товар уходит в «Предзаказ»). 21.10.2026
+# так «сломался» прежний первый кандидат jbl-charge-6-purple — 8 тестов кредита
+# ждали 45 с клика по неактивной кнопке.
+_PDP_CREDIT_JS = """() => {
+  const p = window.__NUXT__?.state?.product?.product;
+  return p?.credit?.has === true && Number(p.stock) > 0;
+}"""
 
 # То же дерево `__NUXT__`, но отбираем по кредиту; сток тоже требуем — без него
 # товар уходит в «Предзаказ» и часть сценариев кредита недоступна.
