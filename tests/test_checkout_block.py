@@ -22,8 +22,8 @@
     * «Тип» (по факту UI это «Кишинёв / Молдова»): input#delivery-chisinau
       / input#delivery-region (отдельные radio name'ы).
 - Оплата (блок `.payment.payment__method`):
-    * input#cash / #maib / #moldindcombank / #credit / #recount / #certificate
-      (все radio name=radio-payment)
+    * input#cash / #maib / #transilvania / #credit / #recount /
+      #cash_on_receipt / #certificate (все radio name=radio-payment)
 - Адрес (видны при «Доставка по адресу»):
     * Регион / Населенный пункт: 2 `.v-select`; вторая включается после
       выбора в первой.
@@ -103,7 +103,7 @@ RADIO_DELIVERY_PICKUP = f'{CHECKOUT_FORM} input#self-call'
 RADIO_DELIVERY_CHISINAU = f'{CHECKOUT_FORM} input#delivery-chisinau'
 RADIO_DELIVERY_REGION = f'{CHECKOUT_FORM} input#delivery-region'
 RADIO_PAY_CASH = f'{CHECKOUT_FORM} input#cash'
-RADIO_PAY_CARD = f'{CHECKOUT_FORM} input#maib'         # Оплата картой MAIB
+RADIO_PAY_CARD = f'{CHECKOUT_FORM} input#maib'         # «Оплата онлайн» (MAIB)
 RADIO_PAY_CREDIT = f'{CHECKOUT_FORM} input#credit'
 RADIO_PAY_TRANSFER = f'{CHECKOUT_FORM} input#recount'  # По перечислению
 
@@ -245,17 +245,28 @@ def _click_radio_by_id(page: Page, radio_id: str):
     на телефоне к низу формы прилип блок итога с кнопками (~290px), и подпись,
     доведённая до нижнего края, оказывалась под ним — клик приходился в ссылку
     «условия…», радио не переключалось (мобильная суита, 29.09.2026). На
-    десктопе от этого ничего не меняется."""
+    десктопе от этого ничего не меняется.
+
+    Кликаем до фактического выбора: клик в первые ~70 мс после появления формы
+    теряется — `change` срабатывает, но выбор откатывается на «Наличными»
+    (замер в MCP-браузере 30.10.2026). Вручную туда не попасть, а на медленном
+    CI тест попадал: Кейс 210 упал на обеих попытках."""
     label = page.locator(f'{CHECKOUT_FORM} label[for="{radio_id}"]').first
     label.evaluate("el => el.scrollIntoView({block: 'center'})")
-    label.click()
+    radio = page.locator(f"{CHECKOUT_FORM} input#{radio_id}")
+    _click_until(page, label, radio.is_checked, timeout_ms=1_000)
 
 
 def _require_option(page: Page, radio_id: str, human: str):
     """Набор способов оплаты/доставки зависит от товара (настраивается в админке).
     Если у выбранного товара такой опции нет — корректно пропускаем тест,
-    а не падаем по таймауту."""
-    if page.locator(f'{CHECKOUT_FORM} label[for="{radio_id}"]').count() == 0:
+    а не падаем по таймауту.
+
+    Опцию ждём, а не считаем сразу: `#maib` и `#transilvania` дорисовываются
+    только по ответу `/base/payment-systems`, уже после появления формы.
+    Мгновенный count() на CI давал ложный skip Кейса 208 (30.10.2026)."""
+    option = page.locator(f'{CHECKOUT_FORM} label[for="{radio_id}"]')
+    if wait_until(page, option.count, lambda n: n > 0, timeout_ms=10_000) == 0:
         pytest.skip(f"Опция «{human}» недоступна для выбранного товара")
 
 
@@ -440,7 +451,7 @@ def test_terms_link_opens_in_new_tab(checkout: Page):
     "qase_id, selector, label",
     [
         (207, RADIO_PAY_CASH, "Наличными"),
-        (208, RADIO_PAY_CARD, "Оплата картой"),
+        (208, RADIO_PAY_CARD, "Оплата онлайн"),
         (209, RADIO_PAY_CREDIT, "Покупка в кредит"),
         (210, RADIO_PAY_TRANSFER, "По перечислению"),
     ],
