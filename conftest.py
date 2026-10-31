@@ -21,7 +21,10 @@ _MOBILE_DIR = Path(__file__).parent / "tests" / "mobile"
 # Прод (tests/prod) — так же только по явному пути: ночная суита и локальный
 # `pytest` ходят на stage; прод проверяется только вручную (`pytest tests/prod`).
 _PROD_DIR = Path(__file__).parent / "tests" / "prod"
-_EXPLICIT_ONLY_DIRS = (_MOBILE_DIR, _PROD_DIR)
+# Замеры скорости (tests/perf) — тоже только явно (`pytest tests/perf`): они
+# долгие, меряют, а не проверяют функции, и идут отдельным job'ом.
+_PERF_DIR = Path(__file__).parent / "tests" / "perf"
+_EXPLICIT_ONLY_DIRS = (_MOBILE_DIR, _PROD_DIR, _PERF_DIR)
 
 
 def _dir_requested(config, directory: Path) -> bool:
@@ -299,6 +302,7 @@ _PRODUCT_CANDIDATES = [
     # Подтверждён юзером 2026-08-18: остаток 150 штук. Держим первым, чтобы
     # фикстура не перебирала кандидатов и чтобы тесты, расходующие сток
     # (оформление заказа), не выбивали товар из-под остальных.
+    # 27.10.2026: у всех кандидатов списка сток 0 — работает добор из категорий.
     "/ru/product/jbl-partybox-club-120",
     "/ru/product/jbl-tour-one-m3-smart-tx-black",
     "/ru/product/jbl-tour-pro-3-latte",
@@ -308,6 +312,13 @@ _PRODUCT_CANDIDATES = [
 ]
 # Категории, со страниц которых добираем кандидатов, если список выше не дал стока.
 _CATEGORY_FALLBACKS = ["/ru/casti", "/ru/acustica-portabila", "/ru/catalog"]
+
+# Минимальный остаток, с которым товар годится тестам. Одной штуки мало:
+# корзина доводит количество до 2 (при остатке 1 «+» disabled), а оформление
+# заказа за прогон выкупает ещё штуку. 27.10.2026 на stage обнулили сток всех
+# кандидатов выше, фикстура взяла из категории товар с остатком 1-2, заказ его
+# выкупил — и оба теста «+»/«−» корзины ждали клика по неактивной кнопке.
+_MIN_STOCK = 3
 
 # Остаток лежит прямо в SSR-пейлоаде страницы (`window.__NUXT__`), который
 # инлайнится в HTML — то есть доступен сразу после domcontentloaded, без гидрации.
@@ -329,8 +340,10 @@ _CATEGORY_STOCK_JS = """
     for (const k of Object.keys(o)) walk(o[k]);
   };
   walk(window.__NUXT__);
+  // Самые большие остатки — первыми: их не выбьют заказы этого же прогона.
   return [...new Map(out.map(p => [p.slug, p])).values()]
            .filter(p => Number(p.stock) > 0)
+           .sort((a, b) => Number(b.stock) - Number(a.stock))
            .map(p => p.slug);
 }
 """
@@ -355,7 +368,11 @@ def _has_stock(page, product_url: str) -> bool:
         stock = page.evaluate(_PDP_STOCK_JS)
     except Exception:
         return False
-    return isinstance(stock, (int, float)) and not isinstance(stock, bool) and stock > 0
+    return (
+        isinstance(stock, (int, float))
+        and not isinstance(stock, bool)
+        and stock >= _MIN_STOCK
+    )
 
 
 def _resolve_in_stock_products(page, count: int) -> list[str]:

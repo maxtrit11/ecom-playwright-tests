@@ -187,35 +187,49 @@ def _two_option_ids(page: Page) -> list[str]:
     return ids
 
 
-def _widest_option_id(page: Page) -> str:
-    """`id` опции фильтра с наибольшим числом товаров (подпись «… (N)»).
+def _widest_group_option_ids(page: Page) -> list[str]:
+    """`id` опций самой широкой группы фильтров — от широких к узким (подпись «… (N)»).
 
-    Нужен там, где после фильтрации должно остаться минимум два товара:
-    первая попавшаяся опция в этой категории оставляет один, и проверять
-    порядок сортировки становится не на чем (тест уходил в skip).
+    Нужен там, где после фильтрации должно остаться минимум два товара С ЦЕНОЙ.
+    Одной опции для этого мало: счётчик учитывает и товары без стока, а у них в
+    листинге нет цены (предзаказ). 27.10.2026 у Partybox Club 120 и Stage 320
+    White сток стал 0, и КАЖДАЯ опция категории оставляла пару «товар с ценой +
+    его цвет без цены» — сортировку проверить было не на чем. Поэтому тест
+    набирает опции одной группы (внутри группы — OR, выдача только растёт),
+    пока цен не станет две; группа берётся с наибольшей суммой счётчиков.
     """
-    option_id = page.evaluate(
+    option_ids = page.evaluate(
         """(sel) => {
             const panel = document.querySelector(sel);
-            if (!panel) return null;
+            if (!panel) return [];
             let best = null;
             panel.querySelectorAll(
-                '.filters-vertical__content__params__item.active label'
-            ).forEach(label => {
-                const input = panel.querySelector('#' + CSS.escape(label.htmlFor || ''));
-                if (!input || input.disabled) return;
-                const m = (label.innerText || '').match(/\\((\\d+)\\)/);
-                if (!m) return;
-                const n = parseInt(m[1]);
-                if (!best || n > best.n) best = {n, id: label.htmlFor};
+                '.filters-vertical__content__params__item.active'
+            ).forEach(group => {
+                const opts = [];
+                group.querySelectorAll('label').forEach(label => {
+                    const input = panel.querySelector('#' + CSS.escape(label.htmlFor || ''));
+                    if (!input || input.disabled) return;
+                    const m = (label.innerText || '').match(/\\((\\d+)\\)/);
+                    if (m) opts.push({n: parseInt(m[1]), id: label.htmlFor});
+                });
+                const total = opts.reduce((s, o) => s + o.n, 0);
+                if (!best || total > best.total) best = {total, opts};
             });
-            return best ? best.id : null;
+            if (!best || best.total < 2) return [];
+            return best.opts.sort((a, b) => b.n - a.n).map(o => o.id);
         }""",
         FILTERS_PANEL,
     )
-    if not option_id:
-        pytest.skip("В панели фильтров нет опций со счётчиком товаров")
-    return option_id
+    if not option_ids:
+        pytest.skip("В панели фильтров нет группы, оставляющей хотя бы два товара")
+    return option_ids
+
+
+def _priced_cards(page: Page) -> list[str]:
+    """Тексты блоков цены в выдаче — только у карточек, где цена выведена."""
+    texts = page.locator(f"{GRID} {CARD} .product__prices").all_inner_texts()
+    return [t for t in texts if "MDL" in t]
 
 
 # ===========================================================================
@@ -386,17 +400,25 @@ def test_remove_single_filter_chip(page: Page):
 # ===========================================================================
 def test_sorting_keeps_active_filters(page: Page):
     """Сортировка применяется к отфильтрованной выдаче и не сбрасывает фильтры."""
-    # Берём фильтр с максимальной выдачей: сортировать имеет смысл минимум
-    # на двух товарах, а первая попавшаяся опция оставляет один.
-    _apply_option(page, _widest_option_id(page))
+    # Сортировать по цене имеет смысл минимум на двух товарах С ЦЕНОЙ, а товары
+    # без стока выводятся без неё. Набираем опции одной группы (OR), пока цен
+    # не станет две, — см. `_widest_group_option_ids`.
+    for applied, option_id in enumerate(_widest_group_option_ids(page)[:5], 1):
+        _apply_option(page, option_id)
+        expect(page.locator(CHIP)).to_have_count(applied, timeout=15_000)
+        # Счётчик «Найдено» меняется раньше сетки — ждём, пока карточек станет
+        # столько же, иначе цены считаются по прежней выдаче.
+        found = _found_count(page)
+        if found <= 12:
+            expect(page.locator(CARD)).to_have_count(found, timeout=15_000)
+        if len(_priced_cards(page)) >= 2:
+            break
+    else:
+        pytest.skip("Даже несколько фильтров не оставляют двух товаров с ценой — сортировать нечего")
 
-    expect(page.locator(CHIP)).to_have_count(1, timeout=15_000)
-    chip_before = page.locator(CHIP).first.inner_text()
+    chips_before = page.locator(CHIP).all_inner_texts()
     found_before = _found_count(page)
     cards_before = page.locator(CARD).count()
-
-    if cards_before < 2:
-        pytest.skip("После фильтра остался один товар — сортировать нечего")
 
     # Открыть список сортировок и выбрать «От самой низкой цены»
     grid_before = _grid_signature(page)
@@ -413,8 +435,8 @@ def test_sorting_keeps_active_filters(page: Page):
     _wait_grid_changed(page, grid_before)
 
     # 1. Фильтры не сбросились
-    expect(page.locator(CHIP)).to_have_count(1, timeout=15_000)
-    assert page.locator(CHIP).first.inner_text() == chip_before, "Чип фильтра изменился"
+    expect(page.locator(CHIP)).to_have_count(len(chips_before), timeout=15_000)
+    assert page.locator(CHIP).all_inner_texts() == chips_before, "Чипы фильтров изменились"
     assert "filters=" in page.url, f"Сортировка потеряла фильтры: {page.url}"
 
     # 2. Сортировка применилась именно к отфильтрованной выдаче
@@ -434,8 +456,8 @@ def test_sorting_keeps_active_filters(page: Page):
     # текущая цена), а не из `.no-discount`: тот есть только у товаров без
     # скидки, и в отфильтрованной выдаче из двух-трёх карточек в проверку
     # попадала одна цена — порядок одной цены «верен» всегда (30.09.2026).
-    texts = page.locator(f"{GRID} {CARD} .product__prices").all_inner_texts()
-    prices = [_bani(t) for t in texts if "MDL" in t]
+    texts = _priced_cards(page)
+    prices = [_bani(t) for t in texts]
     assert len(prices) >= 2, f"В отфильтрованной выдаче меньше двух цен: {texts}"
     assert prices == sorted(prices), (
         f"Цены в отфильтрованной выдаче не по возрастанию: {[p / 100 for p in prices]}"
