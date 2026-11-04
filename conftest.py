@@ -452,15 +452,20 @@ _CREDIT_CATEGORY_FALLBACKS = ["/ru/acustica-portabila", "/ru/casti", "/ru/catalo
 # `button.btn__credit` рисуется disabled (товар уходит в «Предзаказ»). 21.10.2026
 # так «сломался» прежний первый кандидат jbl-charge-6-purple — 8 тестов кредита
 # ждали 45 с клика по неактивной кнопке.
-_PDP_CREDIT_JS = """() => {
+# Порог — тот же `_MIN_STOCK`, что у товара корзины, а не «> 0»: 04.11.2026 фикстура
+# взяла из категории jbl-boombox-4-black с остатком 1-2, заявка на кредит / покупка
+# в 1 клик / заказ этого же прогона его выкупили, и Кейс 80 (идёт позже) ждал 45 с
+# клика по ставшей disabled кнопке.
+_PDP_CREDIT_JS = """(minStock) => {
   const p = window.__NUXT__?.state?.product?.product;
-  return p?.credit?.has === true && Number(p.stock) > 0;
+  return p?.credit?.has === true && Number(p.stock) >= minStock;
 }"""
 
 # То же дерево `__NUXT__`, но отбираем по кредиту; сток тоже требуем — без него
 # товар уходит в «Предзаказ» и часть сценариев кредита недоступна.
+# Самые большие остатки — первыми: их не выбьют заказы этого же прогона.
 _CATEGORY_CREDIT_JS = """
-() => {
+(minStock) => {
   const seen = new Set();
   const out = [];
   const walk = (o) => {
@@ -473,7 +478,8 @@ _CATEGORY_CREDIT_JS = """
   };
   walk(window.__NUXT__);
   return [...new Map(out.map(p => [p.slug, p])).values()]
-           .filter(p => p.has && Number(p.stock) > 0)
+           .filter(p => p.has && Number(p.stock) >= minStock)
+           .sort((a, b) => Number(b.stock) - Number(a.stock))
            .map(p => p.slug);
 }
 """
@@ -482,7 +488,7 @@ _CATEGORY_CREDIT_JS = """
 def _has_credit(page, product_url: str) -> bool:
     try:
         page.goto(product_url, wait_until="domcontentloaded", timeout=60_000)
-        return bool(page.evaluate(_PDP_CREDIT_JS))
+        return bool(page.evaluate(_PDP_CREDIT_JS, _MIN_STOCK))
     except Exception:
         return False
 
@@ -500,7 +506,7 @@ def credit_product(browser, base_url) -> str:
         for category in _CREDIT_CATEGORY_FALLBACKS:
             try:
                 page.goto(category, wait_until="domcontentloaded", timeout=60_000)
-                slugs = page.evaluate(_CATEGORY_CREDIT_JS)
+                slugs = page.evaluate(_CATEGORY_CREDIT_JS, _MIN_STOCK)
             except Exception:
                 continue
             for slug in slugs:

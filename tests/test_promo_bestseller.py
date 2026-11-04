@@ -208,6 +208,17 @@ def test_homepage_carousel_see_all_opens_bestseller(page: Page):
     carousel.locator(f'a[href$="{PROMO_URL}"]').first.click()
 
     expect(page).to_have_url(re.compile(rf"{re.escape(PROMO_URL)}/?$"), timeout=30_000)
+    # URL меняется раньше, чем подменяется документ: ~0.4 с после клика в DOM ещё
+    # переходные карточки (14 шт.), а `__NUXT__.state.products` пуст — чтение в этот
+    # момент давало «не нашлись все 7 товаров» (e2e 04.11.2026). Ждём данных
+    # именно подборки, а не первую попавшуюся карточку.
+    page.wait_for_function(
+        """() => {
+            const s = window.__NUXT__?.state?.products;
+            return !!s?.currentCategory?.name && (s.products || []).length > 0;
+        }""",
+        timeout=30_000,
+    )
     expect(page.locator(CARD).first).to_be_visible(timeout=30_000)
     on_page = set(p["url"] for p in _page_data(page)["products"])
     missing = sorted(in_carousel - on_page)
