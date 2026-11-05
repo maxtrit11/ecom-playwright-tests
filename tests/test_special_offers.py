@@ -151,7 +151,9 @@ def test_active_promo_page_shows_countdown_and_products(page: Page):
     expect(countdown).not_to_have_class(re.compile(r"-expired"))
 
     expect(page.locator(FINISHED_BLOCK)).to_have_count(0)
-    assert page.locator(PRODUCT_CARD).count() >= 1, (
+    # Видимые: скрытый листинг (как на завершённой акции) не должен засчитываться.
+    expect(page.locator(f"{PRODUCT_CARD}:visible").first).to_be_visible(timeout=20_000)
+    assert page.locator(f"{PRODUCT_CARD}:visible").count() >= 1, (
         "На странице активной акции нет ни одного товара"
     )
 
@@ -169,7 +171,10 @@ def test_expired_promo_page_shows_finished_notice(page: Page):
     expect(page.locator(DETAIL_COUNTDOWN_EXPIRED)).to_be_visible(timeout=15_000)
     expect(page.locator(DETAIL_COUNTDOWN_EXPIRED)).to_have_text(RE_EXPIRED)
 
-    assert page.locator(PRODUCT_CARD).count() == 0, (
+    # Считаем ВИДИМЫЕ карточки: с 11.2026 фронт рендерит листинг товаров акции
+    # и на завершённой, но прячет его контейнер (`div.container` с display:none),
+    # — в DOM 8 `.product__item`, пользователь не видит ни одного.
+    assert page.locator(f"{PRODUCT_CARD}:visible").count() == 0, (
         "На странице завершённой акции всё ещё показываются товары"
     )
 
